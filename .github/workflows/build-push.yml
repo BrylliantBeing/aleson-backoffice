@@ -1,6 +1,6 @@
 # Builds the ticketing-office image and pushes it to GHCR as
 # ghcr.io/<owner>/aleson-backoffice. Deploying is still manual on purpose —
-# see aleson-website/deploy/k8s/README.md ("Update / redeploy"): this cluster
+# see aleson-website/deploy/k8s/README.md ("Subsequent releases"): this cluster
 # is not reachable from GitHub, so the rollout is a kubectl command you run
 # afterwards.
 name: Build and push backoffice image
@@ -8,6 +8,8 @@ name: Build and push backoffice image
 on:
   push:
     branches: [main]
+    # Version tags are what deploy/k8s/kustomization.yaml pins to.
+    tags: ["v*"]
     paths-ignore:
       - "**.md"
   workflow_dispatch:
@@ -49,6 +51,11 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
+            # Emits the tag verbatim (v1.0.0), matching kustomization.yaml's
+            # newTag. Deploy from these, not :latest -- with
+            # imagePullPolicy: IfNotPresent a node that cached :latest keeps
+            # serving old code with no error to tell you.
+            type=ref,event=tag
 
       # EXPO_PUBLIC_* is inlined by Metro at BUILD time, so the API base URL is
       # baked into this image and cannot be changed by a k8s env var later.
