@@ -1,0 +1,17 @@
+.git
+.gitignore
+node_modules
+dist
+web-build
+.expo
+.expo-shared
+*.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+k8s
+.env
+.env.*
+.idea
+.vscode
+npm-debug.*
