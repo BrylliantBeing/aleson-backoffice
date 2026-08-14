@@ -16,7 +16,7 @@ COPY . .
 # .dockerignore excludes .env: the value must come from the build, not from a
 # stale file. src/utils/api.ts already defaults to the cloud API host, so this
 # ARG only needs overriding for a non-default backend.
-ARG EXPO_PUBLIC_API_BASE_URL=https://aleson-test-2.brylletan.com
+ARG EXPO_PUBLIC_API_BASE_URL=https://aleson-shipping.com
 ENV EXPO_PUBLIC_API_BASE_URL=${EXPO_PUBLIC_API_BASE_URL}
 
 ENV NODE_ENV=production

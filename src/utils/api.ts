@@ -5,7 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // unlike the website's EXPO_PUBLIC_API_BASE_URL, which bakes the prefix in).
 // Override with EXPO_PUBLIC_API_BASE_URL to point at a local server.
 export const API_BASE =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://aleson-test-2.brylletan.com";
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://aleson-shipping.com";
 
 // Where the agent session token is persisted. AsyncStorage works across native
 // and Expo web (localStorage); it is not encrypted at rest — acceptable for an
