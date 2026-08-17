@@ -1,9 +1,10 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import Background from "@/components/Background";
 import CustomSelectList from "@/components/CustomSelectList";
 import DateField from "@/components/DateField";
 import MiniCalendar from "@/components/MiniCalendar";
+import PrinterSetupModal from "@/components/PrinterSetupModal";
 import SeatAssignModal from "@/components/SeatAssignModal";
+import Toast, { ToastRow } from "@/components/Toast";
 import TravelDateField from "@/components/TravelDateField";
 import VoyageLegPicker from "@/components/VoyageLegPicker";
 import Colors from "@/constants/Colors";
@@ -14,13 +15,25 @@ import {
   CATEGORIES,
   CATEGORY_META,
   CATEGORY_TO_DB,
-  peso,
   SEAT_OCCUPYING,
   validateDob,
 } from "@/utils/passengerRules";
+import { DEFAULT_CURRENCY, money, moneyWhole } from "@/utils/currency";
 import { autoAssignSeats } from "@/utils/seatAssign";
 import { makeScheduleChecker, RouteVoyage } from "@/utils/schedule";
 import { quickCashOptions } from "@/utils/payment";
+import {
+  loadPrinterSettings,
+  PrinterSettings,
+  printTickets,
+  DEFAULT_SETTINGS,
+} from "@/utils/printer";
+import {
+  attachServerTickets,
+  buildTicketData,
+  ServerTicket,
+  TicketData,
+} from "@/utils/ticketLayout";
 import { ClassInfo, TicketType, Voyage } from "@/types/voyage";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -35,10 +48,6 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-
-// Remembers which physical ticket counter this device is printing at, across app
-// restarts — each station keeps its own auto-incrementing ticket number sequence.
-const TICKET_STATION_KEY = "aleson.ticket.station";
 
 const isoLocal = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -79,6 +88,23 @@ const legFare = (
   return sum;
 };
 
+/** One passenger's fare for a leg — the amount printed in that ticket's FARE box. */
+const paxFare = (
+  v: Voyage | undefined,
+  className: string,
+  category: Category
+): number => {
+  if (!v || !className) return 0;
+  return v.class_name?.[className]?.ticket_type.find((t) => t.type === category)?.price ?? 0;
+};
+
+/** Currency a leg's fares are quoted in. Every fare on one sailing/class shares
+ *  it, so the first entry answers for the leg. */
+const legCurrency = (v: Voyage | undefined, className: string): string | null => {
+  if (!v || !className) return null;
+  return v.class_name?.[className]?.ticket_type[0]?.currency ?? null;
+};
+
 const BookingOffice = () => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
@@ -97,6 +123,8 @@ const BookingOffice = () => {
   // Route options from /routes
   const [origins, setOrigins] = useState<string[]>([]);
   const [destsByOrigin, setDestsByOrigin] = useState<Record<string, string[]>>({});
+  // Port name → ports.code, which the printed voyage number is built from.
+  const [portCodes, setPortCodes] = useState<Record<string, string>>({});
 
   // All active schedules (with rrules) — drives the mini-calendars' "no trips"
   // greying without a per-date round trip.
@@ -135,30 +163,50 @@ const BookingOffice = () => {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [qr, setQr] = useState<{ orderId: string; image: string } | null>(null);
-  const [receipt, setReceipt] = useState<
+  // Confirmed payments surface as a toast over the (already cleared) form — the
+  // cashier stays on the booking screen and can start the next sale immediately.
+  const [toast, setToast] = useState<
     | {
         reference: string;
         change: number | null;
         method: string;
         total: number;
+        // Currency the sale settled in — the change handed back is in the same
+        // one, so the toast has to name it.
+        currency: string;
         ticketNumbers: (string | null)[] | null;
       }
     | null
   >(null);
+  // Measured toast height, used to keep the grid clear of it while it is up.
+  const [toastHeight, setToastHeight] = useState(0);
 
-  // ── Ticket number (printed on the physical passage ticket) ─────────────────
-  // Editable, auto-incrementing per ticket station — one number per passenger
-  // ticket. Prefilled from the station's running counter but can be corrected
-  // by the cashier (e.g. after a paper skip/jam, or a freshly loaded booklet).
-  const [ticketStation, setTicketStation] = useState("");
+  // ── Ticket printing ──────────────────────────────────────────────────────
+  // Settings are per-counter (which Windows printer to use), so they load from
+  // this machine's storage rather than the agent's account.
+  const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(DEFAULT_SETTINGS);
+  const [printerOpen, setPrinterOpen] = useState(false);
+  const [printMsg, setPrintMsg] = useState<string | null>(null);
+  // The forms for the sale just completed. The booking screen is cleared the
+  // instant a payment settles, so the printable ticket has to be captured
+  // before the reset — that snapshot is also what Reprint re-sends after a jam.
+  const lastTickets = useRef<TicketData[]>([]);
+
+  useEffect(() => {
+    loadPrinterSettings().then(setPrinterSettings);
+  }, []);
+
+  // ── Ticket number (printed on the passage ticket) ─────────────────────────
+  // Assigned by the server from the agent account's assigned station (set by an
+  // admin) when the tickets are created. Shown here only as a preview of what
+  // this counter will issue next; an admin corrects a station's sequence through
+  // PUT /api/v1/office/ticket-number, not from the selling screen.
+  const ticketStation = agent?.ticket_station ?? null;
   const [ticketNumber, setTicketNumber] = useState("");
-  const [stationHydrated, setStationHydrated] = useState(false);
 
-  const fetchNextTicketNumber = async (station: string) => {
-    const st = station.trim().toUpperCase();
-    if (!st) return;
+  const fetchNextTicketNumber = async () => {
     try {
-      const res = await apiFetch(`/api/v1/office/ticket-number?station=${encodeURIComponent(st)}`);
+      const res = await apiFetch("/api/v1/office/ticket-number");
       if (!res.ok) return;
       const data = await res.json();
       if (data?.ticket_number) setTicketNumber(data.ticket_number);
@@ -167,30 +215,11 @@ const BookingOffice = () => {
     }
   };
 
-  // Rehydrate the remembered ticket station and prefill its next number.
+  // Prefill the station's next number once the agent (and its station) is known.
   useEffect(() => {
-    (async () => {
-      try {
-        const saved = await AsyncStorage.getItem(TICKET_STATION_KEY);
-        if (saved) {
-          setTicketStation(saved);
-          fetchNextTicketNumber(saved);
-        }
-      } catch {
-        /* storage unavailable — station stays blank, cashier can type it in */
-      } finally {
-        setStationHydrated(true);
-      }
-    })();
+    if (ticketStation) fetchNextTicketNumber();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Persist the station once hydration has run (avoids clobbering the saved
-  // value with the initial empty state before rehydration completes).
-  useEffect(() => {
-    if (!stationHydrated) return;
-    AsyncStorage.setItem(TICKET_STATION_KEY, ticketStation).catch(() => {});
-  }, [ticketStation, stationHydrated]);
+  }, [ticketStation]);
 
   const seatPax = SEAT_OCCUPYING.reduce((s, k) => s + (counts[k] || 0), 0);
   const totalPax = CATEGORIES.reduce((s, c) => s + (counts[c.key] || 0), 0);
@@ -199,16 +228,29 @@ const BookingOffice = () => {
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/routes`)
       .then((r) => r.json())
-      .then((rows: { origin: string; destination: string }[]) => {
-        const oset = new Set<string>();
-        const map: Record<string, string[]> = {};
-        rows.forEach((r) => {
-          oset.add(r.origin);
-          (map[r.origin] ??= []).push(r.destination);
-        });
-        setOrigins([...oset]);
-        setDestsByOrigin(map);
-      })
+      .then(
+        (
+          rows: {
+            origin: string;
+            destination: string;
+            origin_code?: string;
+            destination_code?: string;
+          }[]
+        ) => {
+          const oset = new Set<string>();
+          const map: Record<string, string[]> = {};
+          const codes: Record<string, string> = {};
+          rows.forEach((r) => {
+            oset.add(r.origin);
+            (map[r.origin] ??= []).push(r.destination);
+            if (r.origin_code) codes[r.origin] = r.origin_code;
+            if (r.destination_code) codes[r.destination] = r.destination_code;
+          });
+          setOrigins([...oset]);
+          setDestsByOrigin(map);
+          setPortCodes(codes);
+        }
+      )
       .catch(console.error);
 
     fetch(`${API_BASE}/api/v1/voyages`)
@@ -395,6 +437,15 @@ const BookingOffice = () => {
     legFare(depVoyage, depClass, counts) +
     (tripType === "round-trip" ? legFare(retVoyage, retClass, counts) : 0);
 
+  // One booking is paid as one amount, so both legs must price in the same
+  // currency — nothing converts PHP to MYR. The backend rejects a mixed cart;
+  // catching it here keeps the cashier from reaching the payment screen first.
+  const depCurrency = legCurrency(depVoyage, depClass);
+  const retCurrency = tripType === "round-trip" ? legCurrency(retVoyage, retClass) : null;
+  const currency = depCurrency ?? retCurrency ?? DEFAULT_CURRENCY;
+  const mixedCurrency =
+    !!depCurrency && !!retCurrency && depCurrency !== retCurrency;
+
   const depReady = depVoyageId != null && !!depClass;
   const retReady = tripType === "one-way" || (retVoyageId != null && !!retClass);
   const seatsOk =
@@ -463,18 +514,85 @@ const BookingOffice = () => {
   const change = method === "cash" ? tenderedNum - total : null;
   const quickTenders = quickCashOptions(total);
 
-  const ticketNumberOk = !!ticketStation.trim() && !!ticketNumber.trim();
+  // No station on the account means this cashier cannot issue numbered tickets
+  // at all — an admin has to assign one before they can sell.
+  const ticketNumberOk = !!ticketStation;
+  // The field sits at the top of the passenger panel, well away from the Confirm
+  // button, so flag it in place once the sale is far enough along to need it.
+  const ticketNumberMissing = revealed && !ticketNumberOk;
 
-  const canConfirm =
-    revealed &&
-    seatsOk &&
-    passengersComplete &&
-    contactComplete &&
-    ticketNumberOk &&
-    total > 0 &&
-    !!method &&
-    cashOk &&
-    !submitting;
+  // Every reason this sale cannot go through, phrased as the fix and ordered the
+  // way the cashier works down the screen. Confirm stays pressable while these
+  // exist so a press names what is missing instead of doing nothing — a dead
+  // button at the counter looks like a broken printer or a broken server.
+  const missingPaxFields = (p: PassengerRow) => {
+    const missing: string[] = [];
+    if (!p.first_name.trim()) missing.push("first name");
+    if (!p.middle_initial.trim()) missing.push("middle initial");
+    if (!p.last_name.trim()) missing.push("last name");
+    if (!p.birthdate) missing.push("birthdate");
+    if (!p.sex) missing.push("sex");
+    if (!p.nationality.trim()) missing.push("nationality");
+    return missing;
+  };
+
+  const confirmBlockers: string[] = [];
+  if (!ticketStation) {
+    confirmBlockers.push(
+      "This account has no ticket counter assigned — an admin has to set one before you can sell."
+    );
+  } else if (!ticketNumber.trim()) {
+    confirmBlockers.push("Enter the ticket number printed on the passage ticket.");
+  }
+  if (!depReady) confirmBlockers.push("Choose the departure voyage and class.");
+  if (!retReady) confirmBlockers.push("Choose the return voyage and class.");
+  if (revealed && !seatsOk) {
+    confirmBlockers.push(
+      `Assign ${seatPax} seat(s) — this class does not have that many free.`
+    );
+  }
+  if (passengers.length === 0) {
+    confirmBlockers.push("Add at least one passenger.");
+  } else {
+    passengers.forEach((p, i) => {
+      const label = contactPaxOptions[i]?.label ?? `Passenger ${i + 1}`;
+      const missing = missingPaxFields(p);
+      if (missing.length) {
+        confirmBlockers.push(`${label}: fill in ${missing.join(", ")}.`);
+      } else if (dobErrors[i]) {
+        confirmBlockers.push(`${label}: ${dobErrors[i]}`);
+      }
+    });
+  }
+  if (!contactLast.trim()) confirmBlockers.push("Enter the contact person's last name.");
+  if (!email.trim() && !phone.trim()) {
+    confirmBlockers.push("Enter a contact phone number or email.");
+  }
+  if (!method) {
+    confirmBlockers.push("Choose a payment method.");
+  } else if (!cashOk) {
+    confirmBlockers.push(
+      `Cash tendered (${money(tenderedNum, currency)}) is less than the total ${money(
+        total,
+        currency
+      )}.`
+    );
+  }
+  if (revealed && total <= 0) {
+    confirmBlockers.push("This sale totals zero — check the fares for the selected class.");
+  }
+  if (mixedCurrency) {
+    confirmBlockers.push(
+      `This trip mixes ${depCurrency} and ${retCurrency} fares — sell the two legs as separate bookings.`
+    );
+  }
+
+  const blockerMessage = () =>
+    confirmBlockers.length === 1
+      ? confirmBlockers[0]
+      : `Can't confirm payment yet:\n${confirmBlockers.map((b) => `• ${b}`).join("\n")}`;
+
+  const canConfirm = confirmBlockers.length === 0 && !submitting;
 
   const buildBooking = () => {
     let si = 0;
@@ -528,9 +646,104 @@ const BookingOffice = () => {
       departure,
       return_trip,
       passengers: pax,
-      ticket_station: ticketStation.trim().toUpperCase(),
-      starting_ticket_number: ticketNumber.trim().toUpperCase(),
+      // Neither the station nor the serial is sent: the server takes the station
+      // from the selling agent's account and assigns serials from that counter's
+      // sequence, so a client can neither pick its own numbers nor collide with
+      // another counter mid-sale.
     };
+  };
+
+  /**
+   * One printable ticket per passenger the server is about to create.
+   *
+   * Order matters: the backend numbers tickets departure-leg-first, all
+   * passengers in row order, then the return leg (see _insert_leg_tickets), and
+   * `attachServerTickets` pairs the returned serials and boarding tokens back by
+   * position. Printing in any other order would put one passenger's QR on
+   * another's ticket and board the wrong person.
+   */
+  const buildTickets = (): TicketData[] => {
+    const issuedDateISO = todayISO();
+    const tripKind = tripType === "one-way" ? "ONE WAY" : "ROUND TRIP";
+    const legs = [
+      {
+        voyage: depVoyage,
+        className: depClass,
+        dateISO: depDate,
+        from: origin,
+        to: destination,
+        seats: depSeats,
+      },
+      ...(tripType === "round-trip"
+        ? [
+            {
+              voyage: retVoyage,
+              className: retClass,
+              dateISO: retDate,
+              from: destination,
+              to: origin,
+              seats: retSeats,
+            },
+          ]
+        : []),
+    ];
+
+    const out: TicketData[] = [];
+    for (const leg of legs) {
+      // Seats are handed out to seat-occupying passengers only, in row order —
+      // the same walk buildBooking does, so a lap infant does not consume one.
+      let si = 0;
+      for (const p of passengers) {
+        const seat = CATEGORY_META[p.category].seatOccupying
+          ? leg.seats[si++] ?? null
+          : null;
+        out.push(
+          buildTicketData(
+            {
+              vessel: leg.voyage?.vessel_name ?? "",
+              origin: leg.from,
+              destination: leg.to,
+              originCode: portCodes[leg.from] ?? "",
+              destinationCode: portCodes[leg.to] ?? "",
+              departDateISO: leg.dateISO,
+              departTime: leg.voyage?.departure_time ?? null,
+              accommodation: leg.className,
+              tripKind,
+              ticketStation: ticketStation ?? "",
+              issuedBy: agent?.name ?? "",
+              issuedDateISO,
+            },
+            {
+              firstName: p.first_name,
+              middleInitial: p.middle_initial,
+              lastName: p.last_name,
+              birthdate: p.birthdate,
+              sex: p.sex,
+              nationality: p.nationality,
+              fare: paxFare(leg.voyage, leg.className, p.category),
+              currency: legCurrency(leg.voyage, leg.className) ?? currency,
+              seat,
+            }
+          )
+        );
+      }
+    }
+    return out;
+  };
+
+  /**
+   * Send the captured forms to the counter's printer. Never blocks the sale:
+   * the money is already taken and the booking already exists, so a printer
+   * that is off or jammed becomes a message plus a Reprint button, not an error
+   * on a completed transaction.
+   */
+  const printCapturedTickets = async (settings = printerSettings) => {
+    if (!settings.enabled || lastTickets.current.length === 0) return;
+    setPrintMsg(null);
+    const result = await printTickets(lastTickets.current, settings);
+    setPrintMsg(
+      result.ok ? null : `Ticket did not print: ${result.error} Use Reprint once it's fixed.`
+    );
   };
 
   // Poll QR settlement.
@@ -544,14 +757,16 @@ const BookingOffice = () => {
         const data = await res.json();
         if (data.booking_reference) {
           if (pollRef.current) clearInterval(pollRef.current);
-          setReceipt({
+          completeSale({
             reference: data.booking_reference,
             change: null,
             method: "qr",
             total,
+            // The server prices the sale off the fare table, so trust its
+            // answer over the cart's when the two could ever disagree.
+            currency: data.currency ?? currency,
             ticketNumbers: data.ticket_numbers ?? null,
-          });
-          setQr(null);
+          }, data.tickets ?? null);
         }
       } catch {
         /* keep polling */
@@ -565,7 +780,17 @@ const BookingOffice = () => {
 
   const handleConfirm = async () => {
     setErrorMsg(null);
+    setPrintMsg(null);
+    // Nothing is charged and nothing prints until the form is complete, so say
+    // exactly which fields are holding the sale up.
+    if (confirmBlockers.length) {
+      setErrorMsg(blockerMessage());
+      return;
+    }
     setSubmitting(true);
+    // Snapshot the forms while the booking screen still holds the data — for QR
+    // it settles minutes later, long after the cashier has moved on.
+    lastTickets.current = buildTickets();
     try {
       const res = await apiFetch("/api/v1/office/payment", {
         method: "POST",
@@ -584,13 +809,14 @@ const BookingOffice = () => {
       if (method === "qr") {
         setQr({ orderId: data.order_id, image: data.qr_image });
       } else {
-        setReceipt({
+        completeSale({
           reference: data.booking_reference,
           change: data.change ?? null,
           method,
           total,
+          currency: data.currency ?? currency,
           ticketNumbers: data.ticket_numbers ?? null,
-        });
+        }, data.tickets ?? null);
       }
     } catch {
       setErrorMsg("Could not reach the server.");
@@ -625,10 +851,40 @@ const BookingOffice = () => {
     setTendered("");
     setErrorMsg(null);
     setQr(null);
-    setReceipt(null);
     setTicketNumber("");
-    if (ticketStation.trim()) fetchNextTicketNumber(ticketStation);
+    if (ticketStation) fetchNextTicketNumber();
   };
+
+  // Clear the counter for the next sale, then announce the completed one. The
+  // toast keeps the reference, change and ticket numbers on screen while the
+  // cashier hands over the money — no separate receipt screen to dismiss.
+  const completeSale = (
+    sale: NonNullable<typeof toast>,
+    serverTickets?: ServerTicket[] | null
+  ) => {
+    // The serial and the boarding token are both assigned by the server, so the
+    // snapshot taken before the call is incomplete until they are paired back in.
+    lastTickets.current = attachServerTickets(lastTickets.current, serverTickets);
+    resetForm();
+    setToast(sale);
+    // Fire and forget: printing must not delay clearing the counter, and its
+    // outcome is reported separately so a paper jam never looks like a failed sale.
+    void printCapturedTickets();
+  };
+
+  const toastRows: ToastRow[] = toast
+    ? [
+        { label: "Total paid", value: money(toast.total, toast.currency) },
+        { label: "Payment", value: toast.method.toUpperCase() },
+        ...(toast.change != null
+          ? [{ label: "Change", value: money(toast.change, toast.currency), accent: true }]
+          : []),
+        ...(toast.ticketNumbers ?? []).map((tn, i) => ({
+          label: `Ticket — passenger ${i + 1}`,
+          value: tn || "—",
+        })),
+      ]
+    : [];
 
   const inputStyle = [
     styles.cInput,
@@ -639,74 +895,7 @@ const BookingOffice = () => {
     <Text style={{ color: theme.greyText, fontSize: 13, fontStyle: "italic" }}>{msg}</Text>
   );
 
-  // ── Receipt view (compact, centered, no scroll) ─────────────────────────
-  if (receipt) {
-    return (
-      <Background>
-        <View style={styles.receiptScreen}>
-          <View style={[styles.receiptCard, panelChrome]}>
-            <FontAwesome name="check-circle" size={46} color="#2e9e5b" />
-            <Text style={{ color: theme.greyText, fontSize: 13, marginTop: 8 }}>
-              Booking reference
-            </Text>
-            <Text style={{ color: theme.text, fontSize: 38, fontWeight: "800", letterSpacing: 4 }}>
-              {receipt.reference}
-            </Text>
-            <View style={{ width: "100%", marginTop: 10 }}>
-              <View style={[styles.receiptRow, { borderTopColor: theme.border }]}>
-                <Text style={[styles.receiptLabel, { color: theme.greyText }]}>Total paid</Text>
-                <Text style={[styles.receiptValue, { color: theme.text }]}>{peso(receipt.total)}</Text>
-              </View>
-              <View style={[styles.receiptRow, { borderTopColor: theme.border }]}>
-                <Text style={[styles.receiptLabel, { color: theme.greyText }]}>Payment</Text>
-                <Text style={[styles.receiptValue, { color: theme.text }]}>
-                  {receipt.method.toUpperCase()}
-                </Text>
-              </View>
-              {receipt.change != null && (
-                <View style={[styles.receiptRow, { borderTopColor: theme.border }]}>
-                  <Text style={[styles.receiptLabel, { color: theme.greyText }]}>Change</Text>
-                  <Text style={[styles.receiptValue, { color: "#2e9e5b", fontWeight: "800" }]}>
-                    {peso(receipt.change)}
-                  </Text>
-                </View>
-              )}
-            </View>
-            {receipt.ticketNumbers && receipt.ticketNumbers.length > 0 && (
-              <View style={{ width: "100%", marginTop: 10 }}>
-                <Text
-                  style={{
-                    color: theme.greyText,
-                    fontSize: 11,
-                    fontWeight: "700",
-                    letterSpacing: 0.5,
-                    textTransform: "uppercase",
-                    marginBottom: 4,
-                  }}
-                >
-                  Ticket Number{receipt.ticketNumbers.length > 1 ? "s" : ""} — one per passenger
-                </Text>
-                {receipt.ticketNumbers.map((tn, i) => (
-                  <View key={i} style={[styles.receiptRow, { borderTopColor: theme.border }]}>
-                    <Text style={[styles.receiptLabel, { color: theme.greyText }]}>Passenger {i + 1}</Text>
-                    <Text style={[styles.receiptValue, { color: theme.text }]}>{tn || "—"}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-            <Pressable
-              onPress={resetForm}
-              style={[styles.primaryBtn, { backgroundColor: theme.tint, marginTop: 18, width: "100%" }]}
-            >
-              <Text style={styles.primaryBtnText}>New Booking</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Background>
-    );
-  }
-
-  const totalStr = peso(total);
+  const totalStr = money(total, currency);
 
   return (
     <Background>
@@ -728,6 +917,18 @@ const BookingOffice = () => {
                 <Text style={{ color: theme.primary, fontSize: 22, fontWeight: "800" }}>{totalStr}</Text>
               </View>
             )}
+            <Pressable
+              onPress={() => setPrinterOpen(true)}
+              style={styles.logoutBtn}
+              hitSlop={6}
+            >
+              <FontAwesome
+                name="print"
+                size={14}
+                color={printerSettings.enabled ? theme.tint : theme.greyText}
+              />
+              <Text style={{ color: theme.greyText, fontSize: 13 }}>Printer</Text>
+            </Pressable>
             <Pressable onPress={logout} style={styles.logoutBtn} hitSlop={6}>
               <FontAwesome name="sign-out" size={14} color={theme.greyText} />
               <Text style={{ color: theme.greyText, fontSize: 13 }}>Log out</Text>
@@ -735,8 +936,10 @@ const BookingOffice = () => {
           </View>
         </View>
 
-        {/* 3-column grid filling the rest of the viewport (no scroll) */}
-        <View style={styles.grid}>
+        {/* 3-column grid filling the rest of the viewport (no scroll). The
+            toast now stays up until it is dismissed, so the grid gives back
+            its footprint rather than letting it cover Confirm Payment. */}
+        <View style={[styles.grid, toast ? { paddingBottom: toastHeight + 24 } : null]}>
           {/* ── Column 1: Trip ── */}
           <View style={[styles.col, { flex: 0.85, zIndex: 3 }]}>
             <View style={[styles.panel, panelChrome, { zIndex: 3 }]}>
@@ -907,6 +1110,46 @@ const BookingOffice = () => {
           <View style={[styles.col, { flex: 2.2, zIndex: 1 }]}>
             <View style={[styles.panel, panelChrome, { flex: 1, zIndex: 2 }]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passenger Details</Text>
+
+              {/* Printed ticket stock — kept at the top of the panel so the cashier
+                  can see and correct it without scrolling down to payment, and so it
+                  stays reachable while a QR payment is pending. */}
+              <View style={{ gap: 4 }}>
+                <View
+                  style={[
+                    styles.ticketStrip,
+                    {
+                      borderColor: ticketNumberMissing ? "#e5484d" : theme.border,
+                      backgroundColor: theme.tint + "0d",
+                    },
+                  ]}
+                >
+                  <Text style={[styles.ticketStripLabel, { color: theme.greyText }]}>Next ticket no.</Text>
+                  {/* Read-only: the serial is assigned by the server when the
+                      tickets are created, so what is shown here is a preview of
+                      what this counter will issue, not an input. */}
+                  <TextInput
+                    style={[inputStyle, styles.ticketNumberInput]}
+                    value={ticketNumber}
+                    editable={false}
+                    placeholder={ticketStation ? "—" : "No counter assigned"}
+                    placeholderTextColor={theme.greyText}
+                  />
+                  {ticketStation ? (
+                    <Text style={[styles.ticketStationTag, { color: theme.greyText, borderColor: theme.border }]}>
+                      {ticketStation}
+                    </Text>
+                  ) : null}
+                </View>
+                <Text style={[styles.ticketStripCaption, { color: theme.greyText }]}>
+                  {!ticketStation
+                    ? "This account has no ticket counter assigned — ask an admin to set one before selling."
+                    : totalPax > 1
+                    ? `Starting number — ${totalPax} tickets run on from here, one per passenger.`
+                    : "Number printed on the physical passage ticket."}
+                </Text>
+              </View>
+
               {isRoomBooking && canPickVoyage && (
                 <Pressable
                   style={styles.mixedRow}
@@ -1146,38 +1389,6 @@ const BookingOffice = () => {
                     />
                   </View>
 
-                  <View style={{ gap: 6 }}>
-                    <Text style={{ color: theme.greyText, fontSize: 11, fontWeight: "700", letterSpacing: 0.5, textTransform: "uppercase" }}>
-                      Ticket number — one per passenger
-                    </Text>
-                    <View style={styles.row2}>
-                      <TextInput
-                        style={[inputStyle, { flex: 1 }]}
-                        value={ticketStation}
-                        onChangeText={(t) => setTicketStation(t.toUpperCase())}
-                        onEndEditing={() => {
-                          if (!ticketNumber.trim()) fetchNextTicketNumber(ticketStation);
-                        }}
-                        placeholder="Ticket station (e.g. BLVD1)"
-                        autoCapitalize="characters"
-                        placeholderTextColor={theme.greyText}
-                      />
-                      <TextInput
-                        style={[inputStyle, { flex: 1 }]}
-                        value={ticketNumber}
-                        onChangeText={(t) => setTicketNumber(t.toUpperCase())}
-                        placeholder="Ticket number (e.g. A7945921)"
-                        autoCapitalize="characters"
-                        placeholderTextColor={theme.greyText}
-                      />
-                    </View>
-                    <Pressable onPress={() => fetchNextTicketNumber(ticketStation)}>
-                      <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "600" }}>
-                        Use next number for this station
-                      </Text>
-                    </Pressable>
-                  </View>
-
                   <View style={styles.pillRow}>
                     {(["cash", "qr", "card"] as const).map((m) => {
                       const active = method === m;
@@ -1210,7 +1421,7 @@ const BookingOffice = () => {
                                 style={[styles.quickCashBtn, { backgroundColor: on ? theme.tint : "transparent", borderColor: on ? theme.tint : theme.border }]}
                               >
                                 <Text style={{ color: on ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                                  ₱{amt.toLocaleString("en-PH")}
+                                  {moneyWhole(amt, currency)}
                                 </Text>
                               </Pressable>
                             );
@@ -1229,20 +1440,28 @@ const BookingOffice = () => {
                         <View style={{ alignItems: "flex-end" }}>
                           <Text style={{ color: theme.greyText, fontSize: 10 }}>CHANGE</Text>
                           <Text style={{ fontSize: 17, fontWeight: "800", color: (change ?? 0) < 0 ? "#e5484d" : "#2e9e5b" }}>
-                            {peso(change ?? 0)}
+                            {money(change ?? 0, currency)}
                           </Text>
                         </View>
                       </View>
                     </View>
                   )}
 
+                  {mixedCurrency ? (
+                    <Text style={{ color: "#e5484d", fontSize: 13 }}>
+                      This trip mixes {depCurrency} and {retCurrency} fares. Nothing
+                      converts between them — sell the outbound and return legs as
+                      two separate bookings.
+                    </Text>
+                  ) : null}
+
                   {errorMsg ? (
-                    <Text style={{ color: "#e5484d", fontSize: 13 }}>{errorMsg}</Text>
+                    <Text style={{ color: "#e5484d", fontSize: 13, lineHeight: 18 }}>{errorMsg}</Text>
                   ) : null}
 
                   <Pressable
                     onPress={handleConfirm}
-                    disabled={!canConfirm}
+                    disabled={submitting}
                     style={[styles.confirmBtn, { backgroundColor: canConfirm ? theme.tint : theme.greyText }]}
                   >
                     {submitting ? (
@@ -1293,6 +1512,34 @@ const BookingOffice = () => {
           setSeatModal(null);
         }}
         onClose={() => setSeatModal(null)}
+      />
+
+      <PrinterSetupModal
+        visible={printerOpen}
+        onClose={() => setPrinterOpen(false)}
+        onSaved={setPrinterSettings}
+      />
+
+      <Toast
+        visible={!!toast}
+        title="Payment confirmed"
+        headline={toast?.reference}
+        rows={toastRows}
+        note={printMsg ?? undefined}
+        // Sticky on purpose: the reference, change and ticket numbers stay on
+        // screen for the whole hand-over — through a reprint, a query, or a
+        // customer coming back — until the cashier closes it or the next sale
+        // is confirmed and replaces it.
+        duration={0}
+        onMeasure={setToastHeight}
+        actionLabel={
+          printerSettings.enabled && lastTickets.current.length > 0 ? "Reprint" : undefined
+        }
+        onAction={() => printCapturedTickets()}
+        onDismiss={() => {
+          setToast(null);
+          setPrintMsg(null);
+        }}
       />
     </Background>
   );
@@ -1347,6 +1594,35 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   row2: { flexDirection: "row", gap: 10 },
+  ticketStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  ticketStripLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    fontFamily: "Lato",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  ticketStationTag: {
+    fontSize: 11,
+    fontWeight: "800",
+    fontFamily: "Lato",
+    letterSpacing: 0.5,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    overflow: "hidden",
+  },
+  ticketNumberInput: { flex: 1 },
+  ticketStripCaption: { fontSize: 10, fontFamily: "Lato", paddingHorizontal: 2 },
   cInput: {
     borderWidth: 1,
     borderRadius: 10,
@@ -1457,29 +1733,4 @@ const styles = StyleSheet.create({
   },
   confirmText: { color: "#fff", fontSize: 15, fontWeight: "800", fontFamily: "Lato" },
   confirmTotal: { color: "#fff", fontSize: 18, fontWeight: "800", fontFamily: "Lato" },
-  primaryBtn: {
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 50,
-  },
-  primaryBtnText: { color: "#fff", fontSize: 16, fontWeight: "700", fontFamily: "Lato" },
-  receiptScreen: { flex: 1, alignItems: "center", justifyContent: "center" },
-  receiptCard: {
-    width: "100%",
-    maxWidth: 420,
-    alignItems: "center",
-    padding: 28,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  receiptRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    borderTopWidth: 1,
-    paddingVertical: 10,
-  },
-  receiptLabel: { fontSize: 15 },
-  receiptValue: { fontSize: 17, fontWeight: "600" },
 });

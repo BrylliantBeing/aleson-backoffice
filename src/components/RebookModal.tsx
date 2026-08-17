@@ -1,7 +1,8 @@
 import Colors from "@/constants/Colors";
 import { Voyage } from "@/types/voyage";
 import { apiFetch, API_BASE } from "@/utils/api";
-import { Category, CATEGORY_TO_DB, peso } from "@/utils/passengerRules";
+import { Category, CATEGORY_TO_DB } from "@/utils/passengerRules";
+import { money, moneyWhole } from "@/utils/currency";
 import { quickCashOptions } from "@/utils/payment";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useState } from "react";
@@ -16,8 +17,6 @@ import {
   useColorScheme,
   View,
 } from "react-native";
-import CustomCalendar from "./CustomCalendar";
-import CustomSelectList from "./CustomSelectList";
 import SeatAssignModal from "./SeatAssignModal";
 import VoyageLegPicker from "./VoyageLegPicker";
 
@@ -31,10 +30,21 @@ const DB_TO_CATEGORY: Record<string, Category> = Object.fromEntries(
 export interface RebookableTicket {
   id: number;
   price: number;
+  /** Currency the ticket was sold in. A rebook stays on the same route, so the
+   *  replacement is priced in the same currency; the backend rejects it if the
+   *  fare table says otherwise, since a fare delta across currencies is
+   *  meaningless with no conversion. */
+  currency: string;
   passenger_type: string; // DB value, e.g. "Adult"
   accommodation_class: string;
   origin: string;
   destination: string;
+  /**
+   * Departure dates (ISO, ascending) the backend will accept for this ticket:
+   * its own departure day, plus the next day when it is on the last sailing of
+   * that day. The route is fixed to the ticket's own, so neither is pickable.
+   */
+  rebook_dates: string[];
 }
 
 interface RebookModalProps {
@@ -44,20 +54,27 @@ interface RebookModalProps {
   onSuccess: () => void;
 }
 
-const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// "2026-08-20" → "Thu, 20 Aug". Parsed as local parts, not via Date(iso),
+// which would read the bare date as UTC and can land on the previous day.
+const labelForDate = (iso: string) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString("en-PH", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
 };
 
 const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
 
-  const [origins, setOrigins] = useState<string[]>([]);
-  const [destsByOrigin, setDestsByOrigin] = useState<Record<string, string[]>>({});
-  const [origin, setOrigin] = useState("");
-  const [destination, setDestination] = useState("");
-  const [date, setDate] = useState(todayISO());
+  // Route is fixed to the ticket's own — a rebook moves the passenger between
+  // sailings, it can't re-plan the journey — so there is nothing to pick.
+  const origin = ticket?.origin ?? "";
+  const destination = ticket?.destination ?? "";
+  const [date, setDate] = useState("");
 
   const [voyages, setVoyages] = useState<Voyage[]>([]);
   const [loadingVoyages, setLoadingVoyages] = useState(false);
@@ -71,12 +88,11 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-seed from the ticket's current route each time the modal opens.
+  // Re-seed from the ticket each time the modal opens. The ticket's own
+  // departure day is the default (and often the only) allowed date.
   useEffect(() => {
     if (visible && ticket) {
-      setOrigin(ticket.origin);
-      setDestination(ticket.destination);
-      setDate(todayISO());
+      setDate(ticket.rebook_dates[0] ?? "");
       setVoyageId(null);
       setSelectedClass("");
       setSeat(null);
@@ -85,23 +101,6 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
       setError(null);
     }
   }, [visible, ticket]);
-
-  useEffect(() => {
-    if (!visible) return;
-    fetch(`${API_BASE}/api/v1/routes`)
-      .then((r) => r.json())
-      .then((rows: { origin: string; destination: string }[]) => {
-        const oset = new Set<string>();
-        const map: Record<string, string[]> = {};
-        rows.forEach((r) => {
-          oset.add(r.origin);
-          (map[r.origin] ??= []).push(r.destination);
-        });
-        setOrigins([...oset]);
-        setDestsByOrigin(map);
-      })
-      .catch(console.error);
-  }, [visible]);
 
   useEffect(() => {
     if (!origin || !destination || !date) {
@@ -193,30 +192,42 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
 
           <ScrollView contentContainerStyle={styles.body}>
             <Text style={[styles.subtitle, { color: theme.greyText }]}>
-              Currently {ticket.accommodation_class} · {ticket.origin} → {ticket.destination} · {peso(ticket.price)}
+              Currently {ticket.accommodation_class} · {ticket.origin} → {ticket.destination} · {money(ticket.price, ticket.currency)}
             </Text>
 
-            <View style={styles.row2}>
-              <View style={{ flex: 1, zIndex: 20 }}>
-                <CustomSelectList
-                  label="Origin"
-                  data={origins.map((o, i) => ({ key: String(i), value: o }))}
-                  placeholder={origin || "Select origin"}
-                  onSelect={setOrigin}
-                />
-              </View>
-              <View style={{ flex: 1, zIndex: 20 }}>
-                <CustomSelectList
-                  key={`dest-${origin}`}
-                  label="Destination"
-                  data={(destsByOrigin[origin] || []).map((d, i) => ({ key: String(i), value: d }))}
-                  placeholder={destination || "Select destination"}
-                  onSelect={setDestination}
-                />
-              </View>
+            <View style={[styles.policyBox, { borderColor: theme.border }]}>
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>
+                {origin} → {destination}
+              </Text>
+              <Text style={{ color: theme.greyText, fontSize: 12 }}>
+                {ticket.rebook_dates.length > 1
+                  ? "Last sailing of the day — this ticket may move to another sailing today or tomorrow, same route."
+                  : "Rebooking stays on the same route and the same departure day."}
+              </Text>
             </View>
 
-            <CustomCalendar label="New departure date" defaultDate={date} onDateSelect={setDate} />
+            <View style={{ gap: 8 }}>
+              <Text style={[styles.fieldLabel, { color: theme.greyText }]}>NEW DEPARTURE DATE</Text>
+              <View style={styles.pillRow}>
+                {ticket.rebook_dates.map((d) => {
+                  const active = date === d;
+                  return (
+                    <Pressable
+                      key={d}
+                      onPress={() => setDate(d)}
+                      style={[
+                        styles.pill,
+                        { backgroundColor: active ? theme.tint : "transparent", borderColor: active ? theme.tint : theme.border },
+                      ]}
+                    >
+                      <Text style={{ color: active ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
+                        {labelForDate(d)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
 
             <VoyageLegPicker
               theme={theme}
@@ -242,10 +253,13 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
             {newFare != null && delta != null && (
               <View style={[styles.fareBox, { borderColor: theme.border }]}>
                 <Text style={{ color: theme.greyText, fontSize: 12 }}>
-                  New fare {peso(newFare)} vs. current {peso(ticket.price)}
+                  New fare {money(newFare, ticket.currency)} vs. current{" "}
+                  {money(ticket.price, ticket.currency)}
                 </Text>
                 <Text style={{ color: owesMore ? "#e5484d" : "#2e9e5b", fontSize: 15, fontWeight: "800" }}>
-                  {owesMore ? `Additional payment due: ${peso(delta)}` : "No additional payment due"}
+                  {owesMore
+                    ? `Additional payment due: ${money(delta, ticket.currency)}`
+                    : "No additional payment due"}
                 </Text>
               </View>
             )}
@@ -284,7 +298,7 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
                               style={[styles.quickCashBtn, { backgroundColor: on ? theme.tint : "transparent", borderColor: on ? theme.tint : theme.border }]}
                             >
                               <Text style={{ color: on ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                                ₱{amt.toLocaleString("en-PH")}
+                                {moneyWhole(amt, ticket.currency)}
                               </Text>
                             </Pressable>
                           );
@@ -303,7 +317,7 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
                       <View style={{ alignItems: "flex-end" }}>
                         <Text style={{ color: theme.greyText, fontSize: 10 }}>CHANGE</Text>
                         <Text style={{ fontSize: 17, fontWeight: "800", color: (change ?? 0) < 0 ? "#e5484d" : "#2e9e5b" }}>
-                          {peso(change ?? 0)}
+                          {money(change ?? 0, ticket.currency)}
                         </Text>
                       </View>
                     </View>
@@ -367,7 +381,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: "800", fontFamily: "Lato" },
   body: { padding: 18, gap: 14 },
   subtitle: { fontSize: 13, fontFamily: "Lato" },
-  row2: { flexDirection: "row", gap: 10 },
   input: {
     borderWidth: 1,
     borderRadius: 10,
@@ -377,6 +390,8 @@ const styles = StyleSheet.create({
     fontFamily: "Lato",
   },
   fareBox: { borderWidth: 1, borderRadius: 10, padding: 10, gap: 4 },
+  policyBox: { borderWidth: 1, borderRadius: 10, padding: 10, gap: 4 },
+  fieldLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase" },
   pillRow: { flexDirection: "row", gap: 8 },
   pill: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, alignItems: "center" },
   quickCashRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },

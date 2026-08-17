@@ -1,6 +1,6 @@
-import Colors from "@/constants/Colors";
+﻿import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
-import { peso } from "@/utils/passengerRules";
+import { money } from "@/utils/currency";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,7 +16,12 @@ import {
 export interface RefundableTicket {
   id: number;
   price: number;
+  /** The refund is paid back in the currency the ticket was sold in. */
+  currency: string;
   passenger_name: string;
+  /** Fare less the cancellation fee — the most this ticket can be refunded for. */
+  max_refund: number;
+  cancellation_fee: number;
 }
 
 interface RefundModalProps {
@@ -35,17 +40,18 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-seed the form from the ticket each time the modal opens.
+  // Re-seed the form from the ticket each time the modal opens. The refundable
+  // amount — fare less the cancellation fee — is the default, not the fare.
   useEffect(() => {
     if (visible && ticket) {
-      setAmount(ticket.price.toFixed(2));
+      setAmount(ticket.max_refund.toFixed(2));
       setReason("");
       setError(null);
     }
   }, [visible, ticket]);
 
   const amountNum = parseFloat(amount) || 0;
-  const validAmount = !!ticket && amountNum > 0 && amountNum <= ticket.price;
+  const validAmount = !!ticket && amountNum > 0 && amountNum <= ticket.max_refund;
   const canConfirm = !!ticket && validAmount && reason.trim().length > 0 && !submitting;
 
   const inputStyle = [
@@ -83,8 +89,23 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
         <View style={[styles.sheet, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}>
           <Text style={[styles.title, { color: theme.text }]}>Refund ticket</Text>
           <Text style={[styles.subtitle, { color: theme.greyText }]}>
-            {ticket.passenger_name} · Paid {peso(ticket.price)}
+            {ticket.passenger_name} · Paid {money(ticket.price, ticket.currency)}
           </Text>
+
+          <View style={[styles.breakdown, { borderColor: theme.border }]}>
+            <View style={styles.breakdownRow}>
+              <Text style={{ color: theme.greyText, fontSize: 13 }}>Fare paid</Text>
+              <Text style={{ color: theme.text, fontSize: 13 }}>{money(ticket.price, ticket.currency)}</Text>
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={{ color: theme.greyText, fontSize: 13 }}>Cancellation fee (20%)</Text>
+              <Text style={{ color: "#e5484d", fontSize: 13 }}>−{money(ticket.cancellation_fee, ticket.currency)}</Text>
+            </View>
+            <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 6 }]}>
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>Refundable</Text>
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{money(ticket.max_refund, ticket.currency)}</Text>
+            </View>
+          </View>
 
           <Text style={[styles.label, { color: theme.greyText }]}>REFUND AMOUNT</Text>
           <TextInput
@@ -96,7 +117,7 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
             placeholderTextColor={theme.greyText}
           />
           {!validAmount && amount.length > 0 && (
-            <Text style={styles.errorText}>Amount must be between 0 and {peso(ticket.price)}.</Text>
+            <Text style={styles.errorText}>Amount must be between 0 and {money(ticket.max_refund, ticket.currency)}.</Text>
           )}
 
           <Text style={[styles.label, { color: theme.greyText, marginTop: 12 }]}>REASON</Text>
@@ -123,7 +144,7 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
               {submitting ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={{ color: "#fff", fontWeight: "800" }}>Refund {peso(amountNum || 0)}</Text>
+                <Text style={{ color: "#fff", fontWeight: "800" }}>Refund {money(amountNum || 0, ticket.currency)}</Text>
               )}
             </Pressable>
           </View>
@@ -156,6 +177,8 @@ const styles = StyleSheet.create({
     fontFamily: "Lato",
   },
   errorText: { color: "#e5484d", fontSize: 12, marginTop: 6 },
+  breakdown: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 14, gap: 6 },
+  breakdownRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   actions: { flexDirection: "row", gap: 10, marginTop: 18 },
   btn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center" },
   btnGhost: { borderWidth: 1.5, backgroundColor: "transparent" },

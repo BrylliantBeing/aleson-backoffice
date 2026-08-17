@@ -4,11 +4,12 @@ import { BarChart, HBarChart, LineChart } from "@/components/PerfCharts";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
-import { peso } from "@/utils/passengerRules";
+import { CURRENCIES, DEFAULT_CURRENCY, money } from "@/utils/currency";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -48,6 +49,9 @@ const SalesPerformance = () => {
 
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
+  // Revenue is only meaningful within one currency — PHP and MYR are never
+  // converted, so the whole report is read one currency at a time.
+  const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [agents, setAgents] = useState<AgentPerf[]>([]);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,9 +59,10 @@ const SalesPerformance = () => {
 
   useEffect(() => {
     setLoading(true);
+    const range = `start=${start}&end=${end}&currency=${currency}`;
     Promise.all([
-      apiFetch(`/api/v1/performance/agents?start=${start}&end=${end}`).then((r) => r.json()),
-      apiFetch(`/api/v1/performance/trend?start=${start}&end=${end}`).then((r) => r.json()),
+      apiFetch(`/api/v1/performance/agents?${range}`).then((r) => r.json()),
+      apiFetch(`/api/v1/performance/trend?${range}`).then((r) => r.json()),
     ])
       .then(([a, t]) => {
         setAgents(Array.isArray(a) ? a : []);
@@ -65,7 +70,9 @@ const SalesPerformance = () => {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [start, end]);
+  }, [start, end, currency]);
+
+  const fmtMoney = (n: number) => money(n, currency);
 
   const totals = agents.reduce(
     (acc, a) => {
@@ -84,7 +91,7 @@ const SalesPerformance = () => {
     .map((a) => ({ label: a.name, value: a.revenue }));
 
   const kpis = [
-    { label: "Total Revenue", value: peso(totals.revenue), icon: "money", color: "#028cef" },
+    { label: `Total Revenue (${currency})`, value: fmtMoney(totals.revenue), icon: "money", color: "#028cef" },
     { label: "Bookings", value: String(totals.bookings), icon: "ticket", color: "#2e9e5b" },
     { label: "Passengers", value: String(totals.passengers), icon: "users", color: "#8b5cf6" },
   ];
@@ -104,6 +111,37 @@ const SalesPerformance = () => {
             </View>
             <View style={{ flex: 1, minWidth: 220, zIndex: 20 }}>
               <CustomCalendar label="To" defaultDate={end} onDateSelect={setEnd} />
+            </View>
+            <View style={{ minWidth: 160, justifyContent: "flex-end" }}>
+              <Text style={[styles.filterLabel, { color: theme.greyText }]}>Currency</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {CURRENCIES.map((code) => {
+                  const active = code === currency;
+                  return (
+                    <Pressable
+                      key={code}
+                      onPress={() => setCurrency(code)}
+                      style={[
+                        styles.currencyPill,
+                        {
+                          backgroundColor: active ? theme.tint : "transparent",
+                          borderColor: active ? theme.tint : theme.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          color: active ? "#fff" : theme.text,
+                          fontSize: 13,
+                          fontWeight: "700",
+                        }}
+                      >
+                        {code}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
           </WholeCard>
         </View>
@@ -167,7 +205,7 @@ const SalesPerformance = () => {
               <WholeCard header="Revenue by Agent" spacer={{ height: 12 }}>
                 <View onLayout={(e) => setChartW(e.nativeEvent.layout.width)}>
                   {chartW > 0 && (
-                    <HBarChart data={agentBars} width={chartW} color={theme.tint} labelColor={theme.text} valueFmt={peso} />
+                    <HBarChart data={agentBars} width={chartW} color={theme.tint} labelColor={theme.text} valueFmt={fmtMoney} />
                   )}
                 </View>
               </WholeCard>
@@ -203,7 +241,7 @@ const SalesPerformance = () => {
                         <Text style={[styles.cName, { color: theme.text }]}>{a.name}</Text>
                         <Text style={[styles.cNum, { color: theme.fadedText }]}>{a.bookings}</Text>
                         <Text style={[styles.cNum, { color: theme.fadedText }]}>{a.passengers}</Text>
-                        <Text style={[styles.cRev, { color: theme.text, fontWeight: "700" }]}>{peso(a.revenue)}</Text>
+                        <Text style={[styles.cRev, { color: theme.text, fontWeight: "700" }]}>{fmtMoney(a.revenue)}</Text>
                       </View>
                     ))}
                   </View>
@@ -233,6 +271,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 24,
     elevation: 3,
+  },
+  filterLabel: { fontSize: 13, fontFamily: "Lato", marginBottom: 6 },
+  currencyPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
   },
   kpiIcon: { width: 46, height: 46, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   kpiValue: { fontSize: 28, fontWeight: "800" },

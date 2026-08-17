@@ -3,6 +3,7 @@ import { SeatMap } from "@/utils/seatAssign";
 export interface TicketType {
   type: string; // category slug, e.g. "regular"
   price: number;
+  currency: string; // "PHP" | "MYR" — international routes price in MYR
 }
 
 export interface ClassInfo {

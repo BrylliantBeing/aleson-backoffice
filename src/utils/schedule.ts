@@ -4,7 +4,9 @@
 // carefully format occurrences in UTC to avoid marking the wrong calendar day
 // (the "rrule timezone gotcha"). Here we match entirely in calendar-date space —
 // we only ever read the DTSTART's y/m/d and compare integer day-numbers — so
-// there is no instant→local conversion to get wrong.
+// there is no instant→local conversion to get wrong. That remains true now
+// that schedules carry TZID=Asia/Manila: the DTSTART's calendar date is the
+// Manila date either way, so nothing here needs to change with the timezone.
 //
 // The rrules this system uses are simple: FREQ=DAILY and FREQ=WEEKLY;BYDAY=...,
 // almost always INTERVAL=1. We still handle INTERVAL>1 and MONTHLY/YEARLY so an
@@ -29,9 +31,17 @@ const DAY_CODE: Record<string, number> = {
   SA: 6,
 };
 
+// Schedules carry their zone as `DTSTART;TZID=Asia/Manila:...`; the bare
+// `DTSTART:` form predates that and still exists until /admin/seed migrates a
+// database, so both are accepted. The TZID is deliberately ignored rather than
+// applied: this matcher works purely in calendar-date space (see the header
+// note), and the DTSTART's y/m/d is already the Manila wall-clock date the
+// operator scheduled.
+const DTSTART_RE = /DTSTART(?:;[^:\n]*)?:(\d{4})(\d{2})(\d{2})/;
+
 export function parseRRule(rrule: string | null | undefined): ParsedRule | null {
   if (!rrule) return null;
-  const dt = /DTSTART:(\d{4})(\d{2})(\d{2})/.exec(rrule);
+  const dt = DTSTART_RE.exec(rrule);
   if (!dt) return null;
   const freqM = /FREQ=([A-Z]+)/.exec(rrule);
   const freq = (freqM?.[1] as ParsedRule["freq"]) ?? "DAILY";

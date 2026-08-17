@@ -36,6 +36,13 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# print agent — Python-side, and its config is per-counter. config.json names
+# the exact Windows print queue for the machine it runs on, so it is copied
+# from config.example.json at each counter rather than tracked.
+print-agent/.venv/
+print-agent/__pycache__/
+print-agent/config.json
+
 example
 
 # generated native folders

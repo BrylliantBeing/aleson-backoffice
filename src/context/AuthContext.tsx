@@ -14,6 +14,9 @@ export interface Agent {
   name: string;
   email: string;
   role: string;
+  /** Counter this account sells at, set by an admin. Null = cannot issue
+   *  numbered tickets until one is assigned. */
+  ticket_station: string | null;
 }
 
 interface AuthContextValue {

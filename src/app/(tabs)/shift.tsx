@@ -2,7 +2,7 @@ import Background from "@/components/Background";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
-import { peso } from "@/utils/passengerRules";
+import { CURRENCIES, money } from "@/utils/currency";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useState } from "react";
 import {
@@ -16,14 +16,25 @@ import {
   View,
 } from "react-native";
 
+/** One currency's balance in the drawer. Nothing converts between currencies,
+ *  so each is floated, sold against and counted entirely on its own. */
+interface DrawerLine {
+  currency: string;
+  opening_float: number;
+  cash_sales: number;
+  expected_cash: number;
+}
+
 interface OpenShift {
   id: number;
   opened_at: string;
   opening_float: number;
   expected_cash_so_far: number;
+  by_currency: DrawerLine[];
 }
 
-interface ClosedShiftSummary {
+interface ClosedLine {
+  currency: string;
   expected_cash: number;
   counted_cash: number;
   variance: number;
@@ -43,13 +54,31 @@ const Shift = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [openingFloat, setOpeningFloat] = useState("");
+  // One field per currency — a counter selling an international leg for cash
+  // takes that currency into the same drawer.
+  const emptyAmounts = () =>
+    CURRENCIES.reduce((a, c) => ({ ...a, [c]: "" }), {} as Record<string, string>);
+  const [openingFloats, setOpeningFloats] = useState<Record<string, string>>(emptyAmounts);
   const [opening, setOpening] = useState(false);
 
-  const [countedCash, setCountedCash] = useState("");
+  const [countedCash, setCountedCash] = useState<Record<string, string>>(emptyAmounts);
   const [notes, setNotes] = useState("");
   const [closing, setClosing] = useState(false);
-  const [closedSummary, setClosedSummary] = useState<ClosedShiftSummary | null>(null);
+  const [closedSummary, setClosedSummary] = useState<ClosedLine[] | null>(null);
+
+  /** Blank means "no cash of this currency", not an error — a PHP-only counter
+   *  should never have to type a zero into the MYR box. */
+  const parseAmounts = (raw: Record<string, string>) => {
+    const out: Record<string, number> = {};
+    for (const code of CURRENCIES) {
+      const text = (raw[code] ?? "").trim();
+      if (!text) continue;
+      const value = parseFloat(text);
+      if (isNaN(value) || value < 0) return null;
+      out[code] = value;
+    }
+    return out;
+  };
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -64,9 +93,9 @@ const Shift = () => {
   useEffect(reload, [reload]);
 
   const handleOpen = async () => {
-    const value = parseFloat(openingFloat);
-    if (isNaN(value) || value < 0) {
-      setError("Enter a valid opening float.");
+    const floats = parseAmounts(openingFloats);
+    if (!floats || Object.keys(floats).length === 0) {
+      setError("Enter a valid opening float for at least one currency.");
       return;
     }
     setOpening(true);
@@ -74,11 +103,11 @@ const Shift = () => {
     try {
       const res = await apiFetch("/api/v1/office/shift/open", {
         method: "POST",
-        body: JSON.stringify({ opening_float: value }),
+        body: JSON.stringify({ opening_floats: floats }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to open shift");
-      setOpeningFloat("");
+      setOpeningFloats(emptyAmounts());
       reload();
     } catch (e: any) {
       setError(e.message);
@@ -88,9 +117,9 @@ const Shift = () => {
   };
 
   const handleClose = async () => {
-    const value = parseFloat(countedCash);
-    if (isNaN(value) || value < 0) {
-      setError("Enter the counted cash amount.");
+    const counted = parseAmounts(countedCash);
+    if (!counted) {
+      setError("Enter a valid counted amount.");
       return;
     }
     setClosing(true);
@@ -98,16 +127,15 @@ const Shift = () => {
     try {
       const res = await apiFetch("/api/v1/office/shift/close", {
         method: "POST",
-        body: JSON.stringify({ counted_cash: value, notes: notes.trim() || null }),
+        body: JSON.stringify({
+          counted_cash_by_currency: counted,
+          notes: notes.trim() || null,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to close shift");
-      setClosedSummary({
-        expected_cash: data.expected_cash,
-        counted_cash: data.counted_cash,
-        variance: data.variance,
-      });
-      setCountedCash("");
+      setClosedSummary(data.by_currency ?? []);
+      setCountedCash(emptyAmounts());
       setNotes("");
       reload();
     } catch (e: any) {
@@ -127,19 +155,26 @@ const Shift = () => {
             <View style={{ gap: 12 }}>
               <Text style={{ color: theme.greyText, fontFamily: "Lato" }}>
                 No open shift. Enter the starting cash in the drawer to open one.
+                Leave a currency blank if the drawer holds none of it.
               </Text>
               <View style={{ flexDirection: "row", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
-                <View style={{ minWidth: 200 }}>
-                  <Text style={[styles.label, { color: theme.greyText }]}>Opening Float</Text>
-                  <TextInput
-                    value={openingFloat}
-                    onChangeText={setOpeningFloat}
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                    placeholderTextColor={theme.greyText}
-                    style={[styles.input, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
-                  />
-                </View>
+                {CURRENCIES.map((code) => (
+                  <View key={code} style={{ minWidth: 200 }}>
+                    <Text style={[styles.label, { color: theme.greyText }]}>
+                      Opening Float ({code})
+                    </Text>
+                    <TextInput
+                      value={openingFloats[code] ?? ""}
+                      onChangeText={(v) =>
+                        setOpeningFloats((prev) => ({ ...prev, [code]: v }))
+                      }
+                      keyboardType="decimal-pad"
+                      placeholder="0.00"
+                      placeholderTextColor={theme.greyText}
+                      style={[styles.input, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
+                    />
+                  </View>
+                ))}
                 <Pressable
                   onPress={handleOpen}
                   disabled={opening}
@@ -157,32 +192,52 @@ const Shift = () => {
                   <Text style={[styles.kpiValue, { color: theme.text }]}>{formatWhen(shift.opened_at)}</Text>
                   <Text style={[styles.kpiLabel, { color: theme.greyText }]}>Opened</Text>
                 </View>
-                <View style={[styles.kpi, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}>
-                  <FontAwesome name="money" size={20} color={theme.tint} />
-                  <Text style={[styles.kpiValue, { color: theme.text }]}>{peso(shift.opening_float)}</Text>
-                  <Text style={[styles.kpiLabel, { color: theme.greyText }]}>Opening Float</Text>
-                </View>
-                <View style={[styles.kpi, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}>
-                  <FontAwesome name="calculator" size={20} color={theme.tint} />
-                  <Text style={[styles.kpiValue, { color: theme.text }]}>{peso(shift.expected_cash_so_far)}</Text>
-                  <Text style={[styles.kpiLabel, { color: theme.greyText }]}>Expected Cash Now</Text>
-                </View>
+                {/* One pair of figures per currency held — never a single total,
+                    since PHP and MYR are not interchangeable. */}
+                {(shift.by_currency ?? []).map((line) => (
+                  <React.Fragment key={line.currency}>
+                    <View style={[styles.kpi, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}>
+                      <FontAwesome name="money" size={20} color={theme.tint} />
+                      <Text style={[styles.kpiValue, { color: theme.text }]}>
+                        {money(line.opening_float, line.currency)}
+                      </Text>
+                      <Text style={[styles.kpiLabel, { color: theme.greyText }]}>
+                        Opening Float ({line.currency})
+                      </Text>
+                    </View>
+                    <View style={[styles.kpi, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}>
+                      <FontAwesome name="calculator" size={20} color={theme.tint} />
+                      <Text style={[styles.kpiValue, { color: theme.text }]}>
+                        {money(line.expected_cash, line.currency)}
+                      </Text>
+                      <Text style={[styles.kpiLabel, { color: theme.greyText }]}>
+                        Expected Cash Now ({line.currency})
+                      </Text>
+                    </View>
+                  </React.Fragment>
+                ))}
               </View>
 
               <View style={{ gap: 12 }}>
                 <Text style={{ color: theme.text, fontFamily: "Lato", fontWeight: "700" }}>Close Shift</Text>
                 <View style={{ flexDirection: "row", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
-                  <View style={{ minWidth: 200 }}>
-                    <Text style={[styles.label, { color: theme.greyText }]}>Counted Cash</Text>
-                    <TextInput
-                      value={countedCash}
-                      onChangeText={setCountedCash}
-                      keyboardType="decimal-pad"
-                      placeholder="0.00"
-                      placeholderTextColor={theme.greyText}
-                      style={[styles.input, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
-                    />
-                  </View>
+                  {CURRENCIES.map((code) => (
+                    <View key={code} style={{ minWidth: 200 }}>
+                      <Text style={[styles.label, { color: theme.greyText }]}>
+                        Counted Cash ({code})
+                      </Text>
+                      <TextInput
+                        value={countedCash[code] ?? ""}
+                        onChangeText={(v) =>
+                          setCountedCash((prev) => ({ ...prev, [code]: v }))
+                        }
+                        keyboardType="decimal-pad"
+                        placeholder="0.00"
+                        placeholderTextColor={theme.greyText}
+                        style={[styles.input, { color: theme.text, backgroundColor: theme.background, borderColor: theme.border }]}
+                      />
+                    </View>
+                  ))}
                   <View style={{ minWidth: 240, flex: 1 }}>
                     <Text style={[styles.label, { color: theme.greyText }]}>Notes (optional)</Text>
                     <TextInput
@@ -210,20 +265,28 @@ const Shift = () => {
 
         {closedSummary && (
           <WholeCard header="Shift Closed" spacer={{ height: 16 }}>
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: theme.text, fontFamily: "Lato" }}>
-                Expected: {peso(closedSummary.expected_cash)} · Counted: {peso(closedSummary.counted_cash)}
-              </Text>
-              <Text
-                style={{
-                  color: closedSummary.variance === 0 ? theme.tint : "#e5484d",
-                  fontFamily: "Lato",
-                  fontWeight: "700",
-                }}
-              >
-                Variance: {closedSummary.variance > 0 ? "+" : ""}
-                {peso(closedSummary.variance)}
-              </Text>
+            <View style={{ gap: 14 }}>
+              {closedSummary.map((line) => (
+                <View key={line.currency} style={{ gap: 6 }}>
+                  <Text style={{ color: theme.text, fontFamily: "Lato", fontWeight: "700" }}>
+                    {line.currency}
+                  </Text>
+                  <Text style={{ color: theme.text, fontFamily: "Lato" }}>
+                    Expected: {money(line.expected_cash, line.currency)} · Counted:{" "}
+                    {money(line.counted_cash, line.currency)}
+                  </Text>
+                  <Text
+                    style={{
+                      color: line.variance === 0 ? theme.tint : "#e5484d",
+                      fontFamily: "Lato",
+                      fontWeight: "700",
+                    }}
+                  >
+                    Variance: {line.variance > 0 ? "+" : ""}
+                    {money(line.variance, line.currency)}
+                  </Text>
+                </View>
+              ))}
             </View>
           </WholeCard>
         )}

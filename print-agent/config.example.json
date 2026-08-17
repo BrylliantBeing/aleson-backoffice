@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to config.json and edit. Environment variables of the same name (PRINT_AGENT_*) win over these.",
+
+  "host": "127.0.0.1",
+  "port": 9101,
+
+  "_printer": "Exact Windows printer name. Leave empty to use the system default.",
+  "printer": "EPSON LX-310 ESC/P",
+
+  "_allowed_origins": "The back office's URL. localhost dev origins are always allowed.",
+  "allowed_origins": "https://backoffice.aleson-shipping.com"
+}

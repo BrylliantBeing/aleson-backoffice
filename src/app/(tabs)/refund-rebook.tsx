@@ -4,7 +4,7 @@ import RefundModal, { RefundableTicket } from "@/components/RefundModal";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
-import { peso } from "@/utils/passengerRules";
+import { money } from "@/utils/currency";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useState } from "react";
 import {
@@ -29,6 +29,8 @@ interface OfficeTicket {
   passenger_type: string;
   seat_number: string;
   price: number;
+  /** Currency the ticket was sold in — refunds pay back in the same one. */
+  currency: string;
   status: string;
   qr_token: string;
   refunded_by_fk: number | null;
@@ -39,6 +41,11 @@ interface OfficeTicket {
   rebooked_to_ticket_fk: number | null;
   ticket_number: string | null;
   eligible: boolean;
+  refundable: boolean;
+  cancellation_fee: number;
+  max_refund: number;
+  cancellation_deadline: string | null;
+  rebook_dates: string[];
 }
 
 interface OfficeBooking {
@@ -46,6 +53,13 @@ interface OfficeBooking {
   booking_reference: string;
   payment_status: string;
   total_price: number;
+  currency: string;
+  purchased_at: string | null;
+}
+
+interface CancellationPolicy {
+  fee_rate: number;
+  window_days: number;
 }
 
 const formatDeparture = (iso: string | null) => {
@@ -53,6 +67,13 @@ const formatDeparture = (iso: string | null) => {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+};
+
+const formatDate = (iso: string | null) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -69,6 +90,7 @@ const RefundRebooking = () => {
   const [reference, setReference] = useState("");
   const [booking, setBooking] = useState<OfficeBooking | null>(null);
   const [tickets, setTickets] = useState<OfficeTicket[]>([]);
+  const [policy, setPolicy] = useState<CancellationPolicy | null>(null);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +116,7 @@ const RefundRebooking = () => {
       const data = await res.json();
       setBooking(data.booking);
       setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+      setPolicy(data.cancellation_policy ?? null);
     } catch {
       setBooking(null);
       setTickets([]);
@@ -146,7 +169,15 @@ const RefundRebooking = () => {
             <View style={styles.bookingHeader}>
               <View>
                 <Text style={[styles.bookingRef, { color: theme.text }]}>{booking.booking_reference}</Text>
-                <Text style={{ color: theme.greyText, fontSize: 12 }}>Total {peso(booking.total_price)}</Text>
+                <Text style={{ color: theme.greyText, fontSize: 12 }}>
+                  Total {money(booking.total_price, booking.currency)} · Purchased {formatDate(booking.purchased_at)}
+                </Text>
+                {policy && (
+                  <Text style={{ color: theme.greyText, fontSize: 12, marginTop: 2 }}>
+                    Cancellation: {Math.round(policy.fee_rate * 100)}% fee, within {policy.window_days} days of
+                    purchase
+                  </Text>
+                )}
               </View>
               <View
                 style={[
@@ -171,7 +202,7 @@ const RefundRebooking = () => {
                       {t.origin} → {t.destination} · {formatDeparture(t.scheduled_departure)}
                     </Text>
                     <Text style={{ color: theme.greyText, fontSize: 12 }}>
-                      {t.accommodation_class} · Seat {t.seat_number} · {peso(t.price)}
+                      {t.accommodation_class} · Seat {t.seat_number} · {money(t.price, t.currency)}
                     </Text>
                     {t.ticket_number && (
                       <Text style={{ color: theme.greyText, fontSize: 12 }}>
@@ -180,7 +211,12 @@ const RefundRebooking = () => {
                     )}
                     {t.status === "Refunded" && (
                       <Text style={{ color: "#e5484d", fontSize: 11, marginTop: 2 }}>
-                        Refunded {peso(t.refund_amount ?? 0)} — {t.refund_reason}
+                        Refunded {money(t.refund_amount ?? 0, t.currency)} — {t.refund_reason}
+                      </Text>
+                    )}
+                    {t.eligible && !t.refundable && (
+                      <Text style={{ color: theme.greyText, fontSize: 11, marginTop: 2 }}>
+                        Cancellation window closed {formatDate(t.cancellation_deadline)} — rebooking only
                       </Text>
                     )}
                     {t.status === "Cancelled" && t.rebooked_to_ticket_fk && (
@@ -198,23 +234,34 @@ const RefundRebooking = () => {
                     </View>
                     {t.eligible && (
                       <View style={{ flexDirection: "row", gap: 6 }}>
-                        <Pressable
-                          onPress={() =>
-                            setRefundTarget({ id: t.id, price: t.price, passenger_name: t.passenger_name })
-                          }
-                          style={[styles.actionBtn, { borderColor: "#e5484d" }]}
-                        >
-                          <Text style={{ color: "#e5484d", fontSize: 12, fontWeight: "700" }}>Refund</Text>
-                        </Pressable>
+                        {t.refundable && (
+                          <Pressable
+                            onPress={() =>
+                              setRefundTarget({
+                                id: t.id,
+                                price: t.price,
+                                currency: t.currency,
+                                passenger_name: t.passenger_name,
+                                max_refund: t.max_refund,
+                                cancellation_fee: t.cancellation_fee,
+                              })
+                            }
+                            style={[styles.actionBtn, { borderColor: "#e5484d" }]}
+                          >
+                            <Text style={{ color: "#e5484d", fontSize: 12, fontWeight: "700" }}>Refund</Text>
+                          </Pressable>
+                        )}
                         <Pressable
                           onPress={() =>
                             setRebookTarget({
                               id: t.id,
                               price: t.price,
+                              currency: t.currency,
                               passenger_type: t.passenger_type,
                               accommodation_class: t.accommodation_class,
                               origin: t.origin,
                               destination: t.destination,
+                              rebook_dates: t.rebook_dates ?? [],
                             })
                           }
                           style={[styles.actionBtn, { borderColor: theme.tint }]}

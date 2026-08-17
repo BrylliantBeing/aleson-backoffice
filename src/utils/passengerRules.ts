@@ -82,9 +82,6 @@ export function validateDob(
   }
 }
 
-export const peso = (n: number) =>
-  "₱" +
-  n.toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+// Money formatting moved to utils/currency.ts when fares gained a currency —
+// an amount can no longer be rendered without knowing which one it is in.
+export { money, moneyWhole } from "./currency";
