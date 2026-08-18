@@ -1,4 +1,4 @@
-import Background from "@/components/Background";
+﻿import Background from "@/components/Background";
 import RebookModal, { RebookableTicket } from "@/components/RebookModal";
 import RefundModal, { RefundableTicket } from "@/components/RefundModal";
 import WholeCard from "@/components/WholeCard";
@@ -37,6 +37,9 @@ interface OfficeTicket {
   refund_reason: string | null;
   refunded_at: string | null;
   refund_amount: number | null;
+  /** 'succeeded' via AUB, 'manual' paid back by hand, or null for older refunds. */
+  refund_status: string | null;
+  refund_reference: string | null;
   rebooked_from_ticket_fk: number | null;
   rebooked_to_ticket_fk: number | null;
   ticket_number: string | null;
@@ -55,6 +58,10 @@ interface OfficeBooking {
   total_price: number;
   currency: string;
   purchased_at: string | null;
+  /** How the sale was paid: 'cash' | 'card' | 'qr' | 'gcash' | 'grabpay' | null. */
+  payment_method: string | null;
+  /** Whether AUB can return the money automatically — see RefundModal. */
+  gateway_refundable: boolean;
 }
 
 interface CancellationPolicy {
@@ -211,7 +218,8 @@ const RefundRebooking = () => {
                     )}
                     {t.status === "Refunded" && (
                       <Text style={{ color: "#e5484d", fontSize: 11, marginTop: 2 }}>
-                        Refunded {money(t.refund_amount ?? 0, t.currency)} — {t.refund_reason}
+                        Refunded {money(t.refund_amount ?? 0, t.currency)}
+                        {t.refund_status === "manual" ? " by hand" : ""} — {t.refund_reason}
                       </Text>
                     )}
                     {t.eligible && !t.refundable && (
@@ -238,6 +246,8 @@ const RefundRebooking = () => {
                           <Pressable
                             onPress={() =>
                               setRefundTarget({
+                                payment_method: booking?.payment_method ?? null,
+                                gateway_refundable: !!booking?.gateway_refundable,
                                 id: t.id,
                                 price: t.price,
                                 currency: t.currency,

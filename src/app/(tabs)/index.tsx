@@ -2,12 +2,14 @@ import Background from "@/components/Background";
 import CustomSelectList from "@/components/CustomSelectList";
 import DateField from "@/components/DateField";
 import MiniCalendar from "@/components/MiniCalendar";
+import NationalityField from "@/components/NationalityField";
 import PrinterSetupModal from "@/components/PrinterSetupModal";
 import SeatAssignModal from "@/components/SeatAssignModal";
 import Toast, { ToastRow } from "@/components/Toast";
 import TravelDateField from "@/components/TravelDateField";
 import VoyageLegPicker from "@/components/VoyageLegPicker";
 import Colors from "@/constants/Colors";
+import { DEFAULT_NATIONALITY } from "@/constants/nationalities";
 import { useAuth } from "@/context/AuthContext";
 import { API_BASE, apiFetch } from "@/utils/api";
 import {
@@ -62,6 +64,9 @@ interface PassengerRow {
   birthdate: string;
   sex: string;
   nationality: string;
+  // Passport / government ID shown at the counter. Optional — a passenger
+  // without one in hand must not stall a sale that is otherwise complete.
+  id_number: string;
 }
 
 const emptyCounts = (): Record<Category, number> =>
@@ -276,7 +281,8 @@ const BookingOffice = () => {
               last_name: "",
               birthdate: "",
               sex: "",
-              nationality: "Filipino",
+              nationality: DEFAULT_NATIONALITY,
+              id_number: "",
             }
           );
         }
@@ -487,9 +493,10 @@ const BookingOffice = () => {
     setPassengers((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
 
   // Enter/next focus chain across passenger-detail inputs. Each row contributes
-  // 5 typed fields in visual order — first, MI, last, birthdate, nationality
-  // (the sex toggle isn't typed, so it's skipped) — and the last field rolls
-  // over into the next passenger's first name.
+  // 5 typed fields in visual order — first, MI, last, birthdate, ID number
+  // (the sex toggle and the nationality dropdown aren't typed, so they're
+  // skipped) — and the last field rolls over into the next passenger's first
+  // name.
   const PAX_FIELDS = 5;
   const paxInputRefs = useRef<Record<number, TextInput | null>>({});
   const focusPaxField = (flatIndex: number) =>
@@ -607,7 +614,8 @@ const BookingOffice = () => {
         last_name: p.last_name.trim(),
         birthdate: p.birthdate,
         gender: p.sex,
-        nationality: p.nationality.trim() || "Filipino",
+        nationality: p.nationality.trim() || DEFAULT_NATIONALITY,
+        id_number: p.id_number.trim() || null,
         passenger_type: CATEGORY_TO_DB[p.category],
         mixed_ok: mixedCabinOk,
         departure_seat: depSeat,
@@ -1182,6 +1190,7 @@ const BookingOffice = () => {
                     <Text style={[styles.paxHeadCell, styles.cDob, { color: theme.greyText }]}>Birthdate</Text>
                     <Text style={[styles.paxHeadCell, styles.cSex, { color: theme.greyText }]}>Sex</Text>
                     <Text style={[styles.paxHeadCell, styles.cNat, { color: theme.greyText }]}>Nationality</Text>
+                    <Text style={[styles.paxHeadCell, styles.cId, { color: theme.greyText }]}>ID Number</Text>
                   </View>
                   <ScrollView
                     style={{ flex: 1 }}
@@ -1285,15 +1294,22 @@ const BookingOffice = () => {
                             );
                           })}
                         </View>
+                        <NationalityField
+                          value={p.nationality}
+                          onChange={(v) => updatePassenger(p.id, { nationality: v })}
+                          style={styles.cNat}
+                        />
                         <TextInput
                           ref={(el) => {
                             paxInputRefs.current[i * PAX_FIELDS + 4] = el;
                           }}
-                          style={[inputStyle, styles.cNat]}
-                          value={p.nationality}
-                          onChangeText={(v) => updatePassenger(p.id, { nationality: v })}
-                          placeholder="Filipino"
+                          style={[inputStyle, styles.cId]}
+                          value={p.id_number}
+                          onChangeText={(v) => updatePassenger(p.id, { id_number: v })}
+                          placeholder="ID / Passport"
                           placeholderTextColor={theme.greyText}
+                          autoCapitalize="characters"
+                          autoCorrect={false}
                           returnKeyType={i === passengers.length - 1 ? "done" : "next"}
                           blurOnSubmit={i === passengers.length - 1}
                           onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
@@ -1718,7 +1734,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  cNat: { flex: 1.1 },
+  cNat: { flex: 1.2 },
+  cId: { flex: 1.2 },
   payRow: { flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
   quickCashRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   quickCashBtn: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },

@@ -22,7 +22,34 @@ export interface RefundableTicket {
   /** Fare less the cancellation fee — the most this ticket can be refunded for. */
   max_refund: number;
   cancellation_fee: number;
+  /** How the booking was paid: 'cash' | 'card' | 'qr' | 'gcash' | 'grabpay' | null. */
+  payment_method: string | null;
+  /**
+   * Whether AUB can return this money automatically. False for cash sales and
+   * for bookings taken before the gateway cutover, which have no payment on
+   * record to refund against — those are paid back by hand.
+   */
+  gateway_refundable: boolean;
 }
+
+// How the money actually goes back, shown before staff commit to the refund.
+const payoutLabel = (ticket: RefundableTicket): string => {
+  if (!ticket.gateway_refundable) {
+    return (ticket.payment_method ?? "").toLowerCase() === "cash"
+      ? "Paid in cash — hand the refund back from the till."
+      : "No gateway payment on record — pay this back by hand and record it here.";
+  }
+  switch ((ticket.payment_method ?? "").toLowerCase()) {
+    case "card":
+      return "Returns to the card used to pay, via AUB.";
+    case "gcash":
+      return "Returns to the customer's GCash wallet, via AUB.";
+    case "grabpay":
+      return "Returns to the customer's GrabPay wallet, via AUB.";
+    default:
+      return "Returns to the account used to pay, via AUB.";
+  }
+};
 
 interface RefundModalProps {
   visible: boolean;
@@ -66,11 +93,21 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
     try {
       const res = await apiFetch(`/api/v1/office/tickets/${ticket.id}/refund`, {
         method: "POST",
-        body: JSON.stringify({ amount: amountNum, reason: reason.trim() }),
+        body: JSON.stringify({
+          amount: amountNum,
+          reason: reason.trim(),
+          // Records the refund without calling AUB. The backend rejects a
+          // gateway refund it cannot perform rather than silently doing this.
+          manual: !ticket.gateway_refundable,
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data?.detail || "Refund failed. Please try again.");
+        const detail = data?.detail;
+        setError(
+          (typeof detail === "object" ? detail?.message : detail) ||
+            "Refund failed. Please try again."
+        );
         return;
       }
       onSuccess();
@@ -105,6 +142,20 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>Refundable</Text>
               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{money(ticket.max_refund, ticket.currency)}</Text>
             </View>
+          </View>
+
+          <View
+            style={[
+              styles.payout,
+              {
+                borderColor: theme.border,
+                backgroundColor: ticket.gateway_refundable ? theme.control : "#fff8e6",
+              },
+            ]}
+          >
+            <Text style={{ color: theme.text, fontSize: 12.5, lineHeight: 18 }}>
+              {payoutLabel(ticket)}
+            </Text>
           </View>
 
           <Text style={[styles.label, { color: theme.greyText }]}>REFUND AMOUNT</Text>
@@ -179,6 +230,7 @@ const styles = StyleSheet.create({
   errorText: { color: "#e5484d", fontSize: 12, marginTop: 6 },
   breakdown: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 14, gap: 6 },
   breakdownRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  payout: { borderWidth: 1, borderRadius: 10, padding: 10, marginBottom: 14 },
   actions: { flexDirection: "row", gap: 10, marginTop: 18 },
   btn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center" },
   btnGhost: { borderWidth: 1.5, backgroundColor: "transparent" },
