@@ -19,6 +19,10 @@ export interface ParsedRule {
   freq: "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
   interval: number;
   byday: number[]; // JS getDay codes (Sun=0 … Sat=6); empty = derive from start
+  // Departure time as minutes past midnight, Manila wall clock. Null when the
+  // DTSTART carries no time — such a rule can't be judged against the clock, so
+  // its day stays available rather than vanishing.
+  startMinutes: number | null;
 }
 
 const DAY_CODE: Record<string, number> = {
@@ -37,7 +41,7 @@ const DAY_CODE: Record<string, number> = {
 // applied: this matcher works purely in calendar-date space (see the header
 // note), and the DTSTART's y/m/d is already the Manila wall-clock date the
 // operator scheduled.
-const DTSTART_RE = /DTSTART(?:;[^:\n]*)?:(\d{4})(\d{2})(\d{2})/;
+const DTSTART_RE = /DTSTART(?:;[^:\n]*)?:(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/;
 
 export function parseRRule(rrule: string | null | undefined): ParsedRule | null {
   if (!rrule) return null;
@@ -54,7 +58,16 @@ export function parseRRule(rrule: string | null | undefined): ParsedRule | null 
         .map((c) => DAY_CODE[c])
         .filter((n) => n !== undefined)
     : [];
-  return { startY: +dt[1], startM: +dt[2], startD: +dt[3], freq, interval, byday };
+  const startMinutes = dt[4] !== undefined ? +dt[4] * 60 + +dt[5] : null;
+  return {
+    startY: +dt[1],
+    startM: +dt[2],
+    startD: +dt[3],
+    freq,
+    interval,
+    byday,
+    startMinutes,
+  };
 }
 
 // Integer day-number for a calendar date (UTC epoch days) — DST-proof and cheap
@@ -113,17 +126,30 @@ export interface RouteVoyage {
   isActive?: boolean;
 }
 
+// Local calendar day, matching the todayISO() the booking screen greys from.
+// The counter machine keeps Manila time, which is the clock the timetable is
+// written in, so local getters are the right ones here.
+const localISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+
 /**
  * Build a predicate `(iso) => boolean` telling whether the given route runs on a
  * date. Returns `undefined` when we can't know yet (no route chosen, or voyages
  * not loaded) so the calendar leaves every day enabled instead of greying them.
  * When the route is known but has no active schedules in that direction, the
  * predicate reports every day as unavailable (all greyed = "no trips").
+ *
+ * Today counts as running only while a sailing is still to come: the backend
+ * stops offering a departure once its time has passed, so leaving today enabled
+ * after the last boat has gone only sends the agent to an empty voyage list.
  */
 export function makeScheduleChecker(
   voyages: RouteVoyage[] | null | undefined,
   origin: string,
-  destination: string
+  destination: string,
+  now: Date = new Date()
 ): ((iso: string) => boolean) | undefined {
   if (!origin || !destination || !voyages || voyages.length === 0) return undefined;
 
@@ -139,9 +165,18 @@ export function makeScheduleChecker(
 
   if (rules.length === 0) return () => false;
 
+  const todayISO = localISO(now);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
   return (iso: string) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
     if (!m) return false;
-    return rules.some((r) => ruleMatchesDate(r, +m[1], +m[2], +m[3]));
+    return rules.some((r) => {
+      if (!ruleMatchesDate(r, +m[1], +m[2], +m[3])) return false;
+      if (iso === todayISO && r.startMinutes !== null && r.startMinutes <= nowMinutes) {
+        return false; // that boat has already sailed
+      }
+      return true;
+    });
   };
 }

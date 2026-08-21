@@ -293,7 +293,13 @@ const styles = StyleSheet.create({
   headerSub: { fontSize: 14, fontFamily: "Lato", marginTop: 2 },
   closeBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 
-  legend: { flexDirection: "row", gap: 18, paddingHorizontal: 20, paddingVertical: 12 },
+  legend: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 18,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   legendDot: { width: 14, height: 14, borderRadius: 4 },
   legendLabel: { fontSize: 13, fontFamily: "Lato" },

@@ -3,6 +3,7 @@ import CustomCalendar from "@/components/CustomCalendar";
 import { BarChart, HBarChart, LineChart } from "@/components/PerfCharts";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
+import { useLayout } from "@/hooks/useLayout";
 import { apiFetch } from "@/utils/api";
 import { CURRENCIES, DEFAULT_CURRENCY, money } from "@/utils/currency";
 import { FontAwesome } from "@expo/vector-icons";
@@ -46,6 +47,7 @@ const shortDate = (iso: string) => {
 const SalesPerformance = () => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
+  const { gutter } = useLayout();
 
   const [start, setStart] = useState(DEFAULT_START);
   const [end, setEnd] = useState(DEFAULT_END);
@@ -151,7 +153,7 @@ const SalesPerformance = () => {
         ) : (
           <>
             {/* KPI tiles */}
-            <View style={styles.kpiRow}>
+            <View style={[styles.kpiRow, { marginHorizontal: gutter }]}>
               {kpis.map((k) => (
                 <View
                   key={k.label}
@@ -259,7 +261,7 @@ const SalesPerformance = () => {
 export default SalesPerformance;
 
 const styles = StyleSheet.create({
-  kpiRow: { flexDirection: "row", gap: 16, marginHorizontal: 20, marginTop: 4, flexWrap: "wrap" },
+  kpiRow: { flexDirection: "row", gap: 16, marginTop: 4, flexWrap: "wrap" },
   kpi: {
     flex: 1,
     minWidth: 180,

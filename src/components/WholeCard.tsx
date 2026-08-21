@@ -1,4 +1,5 @@
 import Colors from "@/constants/Colors";
+import { useLayout } from "@/hooks/useLayout";
 import React from "react";
 import {
     StyleSheet,
@@ -25,6 +26,7 @@ const WholeCard = ({
 }: BackgroundProps) => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
+  const { compact, gutter } = useLayout();
   return (
     <View
       style={[
@@ -33,11 +35,19 @@ const WholeCard = ({
           backgroundColor: theme.cardBackground,
           borderColor: theme.border,
           shadowColor: theme.shadowColor,
+          // The card sits inside Background's padding, so its own margin has to
+          // shrink with the page gutter or a phone loses half its width to chrome.
+          margin: gutter,
+          padding: compact ? 16 : 22,
         },
       ]}
     >
       {header ? (
-        <Text style={[styles.headerText, { color: theme.text }]}>{header}</Text>
+        <Text
+          style={[styles.headerText, { color: theme.text, fontSize: compact ? 20 : 24 }]}
+        >
+          {header}
+        </Text>
       ) : null}
       {spacer ? <Spacer height={spacer.height} /> : <></>}
       <View style={style}>{children}</View>
@@ -49,8 +59,6 @@ export default WholeCard;
 
 const styles = StyleSheet.create({
   container: {
-    margin: 20,
-    padding: 22,
     borderRadius: 20,
     borderWidth: 1,
     // Soft elevated card, matching the website's rounded panels.
@@ -60,7 +68,6 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   headerText: {
-    fontSize: 24,
     fontWeight: "800",
     fontFamily: "Lato",
     marginBottom: 2,

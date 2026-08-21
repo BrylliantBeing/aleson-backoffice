@@ -1,6 +1,7 @@
 import Background from "@/components/Background";
 import CustomSelectList from "@/components/CustomSelectList";
 import DateField from "@/components/DateField";
+import IdTypeField from "@/components/IdTypeField";
 import MiniCalendar from "@/components/MiniCalendar";
 import NationalityField from "@/components/NationalityField";
 import PrinterSetupModal from "@/components/PrinterSetupModal";
@@ -11,6 +12,7 @@ import VoyageLegPicker from "@/components/VoyageLegPicker";
 import Colors from "@/constants/Colors";
 import { DEFAULT_NATIONALITY } from "@/constants/nationalities";
 import { useAuth } from "@/context/AuthContext";
+import { useLayout } from "@/hooks/useLayout";
 import { API_BASE, apiFetch } from "@/utils/api";
 import {
   Category,
@@ -19,6 +21,7 @@ import {
   CATEGORY_TO_DB,
   SEAT_OCCUPYING,
   validateDob,
+  validateName,
 } from "@/utils/passengerRules";
 import { DEFAULT_CURRENCY, money, moneyWhole } from "@/utils/currency";
 import { autoAssignSeats } from "@/utils/seatAssign";
@@ -49,6 +52,8 @@ import {
   TextInput,
   useColorScheme,
   View,
+  FlexStyle,
+  ViewStyle,
 } from "react-native";
 
 const isoLocal = (d: Date) =>
@@ -64,8 +69,10 @@ interface PassengerRow {
   birthdate: string;
   sex: string;
   nationality: string;
-  // Passport / government ID shown at the counter. Optional — a passenger
-  // without one in hand must not stall a sale that is otherwise complete.
+  // Government ID shown at the counter: which document it is, and its number.
+  // Both required — the manifest is checked against the document presented at
+  // boarding, and a number with no document type can't be checked against it.
+  id_type: string;
   id_number: string;
 }
 
@@ -113,6 +120,7 @@ const legCurrency = (v: Voyage | undefined, className: string): string | null =>
 const BookingOffice = () => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
+  const { compact, medium, wide } = useLayout();
   const { agent, logout } = useAuth();
 
   // ── Trip setup ──────────────────────────────────────────────────────────
@@ -282,6 +290,7 @@ const BookingOffice = () => {
               birthdate: "",
               sex: "",
               nationality: DEFAULT_NATIONALITY,
+              id_type: "",
               id_number: "",
             }
           );
@@ -476,6 +485,11 @@ const BookingOffice = () => {
   }, [passengers, depSeats, retSeats]);
 
   const dobErrors = passengers.map((p) => validateDob(p.category, p.birthdate));
+  // Names are matched against the ID at the gate, so a lone initial isn't enough.
+  const nameErrors = passengers.map((p) => ({
+    first: validateName(p.first_name, "First name"),
+    last: validateName(p.last_name, "Last name"),
+  }));
 
   // Contact-person picker: label each passenger like its detail row ("Regular 1").
   const contactBound = contactPaxId != null;
@@ -507,9 +521,9 @@ const BookingOffice = () => {
     passengers.length > 0 &&
     passengers.every(
       (p, i) =>
-        p.first_name.trim() &&
+        !nameErrors[i].first &&
         p.middle_initial.trim() &&
-        p.last_name.trim() &&
+        !nameErrors[i].last &&
         p.birthdate &&
         p.sex &&
         p.nationality.trim() &&
@@ -540,6 +554,8 @@ const BookingOffice = () => {
     if (!p.birthdate) missing.push("birthdate");
     if (!p.sex) missing.push("sex");
     if (!p.nationality.trim()) missing.push("nationality");
+    if (!p.id_type.trim()) missing.push("ID type");
+    if (!p.id_number.trim()) missing.push("ID number");
     return missing;
   };
 
@@ -564,8 +580,11 @@ const BookingOffice = () => {
     passengers.forEach((p, i) => {
       const label = contactPaxOptions[i]?.label ?? `Passenger ${i + 1}`;
       const missing = missingPaxFields(p);
+      const shortName = nameErrors[i].first ?? nameErrors[i].last;
       if (missing.length) {
         confirmBlockers.push(`${label}: fill in ${missing.join(", ")}.`);
+      } else if (shortName) {
+        confirmBlockers.push(`${label}: ${shortName}`);
       } else if (dobErrors[i]) {
         confirmBlockers.push(`${label}: ${dobErrors[i]}`);
       }
@@ -615,6 +634,7 @@ const BookingOffice = () => {
         birthdate: p.birthdate,
         gender: p.sex,
         nationality: p.nationality.trim() || DEFAULT_NATIONALITY,
+        id_type: p.id_type.trim() || null,
         id_number: p.id_number.trim() || null,
         passenger_type: CATEGORY_TO_DB[p.category],
         mixed_ok: mixedCabinOk,
@@ -899,15 +919,236 @@ const BookingOffice = () => {
     { borderColor: theme.border, color: theme.text, backgroundColor: theme.control },
   ];
   const panelChrome = { backgroundColor: theme.cardBackground, borderColor: theme.border };
+
+  // Only the wide desk layout is sized to the viewport: there the three columns
+  // split the height and each panel scrolls in its own box. Anywhere narrower
+  // the page itself scrolls, so panels must size to their content — `flex: 1`
+  // inside a scroller collapses them to nothing.
+  const paneFill: ViewStyle | null = wide ? { flex: 1 } : null;
+  const gridStyle = wide
+    ? [styles.grid, styles.gridFill]
+    : medium
+      ? [styles.grid, styles.gridWrap]
+      : [styles.gridStack];
+  // Medium keeps Trip and Voyage side by side and drops Passenger Details onto
+  // its own full-width row — the pax table is what actually needs the width,
+  // and a full row there is wider than the 2.2fr column it gets on a desk.
+  const halfCol: ViewStyle = { flexBasis: "48%", flexGrow: 1, minWidth: 0 };
+  const colTrip: ViewStyle | null = wide ? { flex: 0.85 } : compact ? null : halfCol;
+  const colVoyage: ViewStyle | null = wide ? { flex: 0.95 } : compact ? null : halfCol;
+  const colPax: ViewStyle | null = wide ? { flex: 2.2 } : compact ? null : { flexBasis: "100%" };
+
+  // A phone cannot show the nine passenger columns side by side, so the row
+  // wraps into lines instead: name, then birthdate and sex, then the travel
+  // document. The bases decide where the breaks fall (each line sums under
+  // 100%, the next field pushes past it); the grows keep each line flush.
+  const paxCell = compact
+    ? {
+        cat: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+        first: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
+        mi: { flexBasis: "13%", flexGrow: 13 } as FlexStyle,
+        last: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
+        dob: { flexBasis: "55%", flexGrow: 55 } as FlexStyle,
+        sex: { flexBasis: "33%", flexGrow: 33 } as FlexStyle,
+        nat: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
+        idType: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
+        id: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+      }
+    : null;
   const hint = (msg: string) => (
     <Text style={{ color: theme.greyText, fontSize: 13, fontStyle: "italic" }}>{msg}</Text>
   );
 
+  const paxRows = passengers.map((p, i) => {
+    const meta = CATEGORY_META[p.category];
+    const seat = seatByPassenger[p.id];
+    const nth = passengers
+      .slice(0, i + 1)
+      .filter((x) => x.category === p.category).length;
+    return (
+      <View
+        key={p.id}
+        style={[
+          styles.paxRow,
+          compact && styles.paxRowWrap,
+          { borderLeftColor: meta.color, backgroundColor: meta.color + "0d" },
+        ]}
+      >
+        <View style={[styles.cCat, paxCell?.cat]}>
+          <Text style={{ color: theme.text, fontSize: 12, fontWeight: "700" }} numberOfLines={1}>
+            {meta.label} {nth}
+          </Text>
+          <Text style={{ color: theme.greyText, fontSize: 10 }} numberOfLines={1}>
+            {meta.seatOccupying
+              ? `Seat ${seat?.dep ?? "—"}${tripType === "round-trip" ? ` / ${seat?.ret ?? "—"}` : ""}`
+              : "Lap"}
+          </Text>
+        </View>
+        <TextInput
+          ref={(el) => {
+            paxInputRefs.current[i * PAX_FIELDS + 0] = el;
+          }}
+          style={[
+            inputStyle,
+            styles.cFirst,
+            paxCell?.first,
+            !!p.first_name && !!nameErrors[i].first && styles.cInputInvalid,
+          ]}
+          value={p.first_name}
+          onChangeText={(v) => updatePassenger(p.id, { first_name: v })}
+          placeholder="First"
+          placeholderTextColor={theme.greyText}
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 0)}
+        />
+        <TextInput
+          ref={(el) => {
+            paxInputRefs.current[i * PAX_FIELDS + 1] = el;
+          }}
+          style={[inputStyle, styles.cMi, paxCell?.mi]}
+          value={p.middle_initial}
+          onChangeText={(v) => updatePassenger(p.id, { middle_initial: v.slice(0, 2) })}
+          placeholder="MI"
+          maxLength={2}
+          placeholderTextColor={theme.greyText}
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 1)}
+        />
+        <TextInput
+          ref={(el) => {
+            paxInputRefs.current[i * PAX_FIELDS + 2] = el;
+          }}
+          style={[
+            inputStyle,
+            styles.cLast,
+            paxCell?.last,
+            !!p.last_name && !!nameErrors[i].last && styles.cInputInvalid,
+          ]}
+          value={p.last_name}
+          onChangeText={(v) => updatePassenger(p.id, { last_name: v })}
+          placeholder="Last"
+          placeholderTextColor={theme.greyText}
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 2)}
+        />
+        <View style={[styles.cDob, paxCell?.dob]}>
+          <DateField
+            ref={(el) => {
+              paxInputRefs.current[i * PAX_FIELDS + 3] = el;
+            }}
+            mode="past"
+            value={p.birthdate}
+            onChange={(d) => updatePassenger(p.id, { birthdate: d })}
+            inputStyle={styles.cInput}
+            error={!!p.birthdate && !!dobErrors[i]}
+            returnKeyType="next"
+            blurOnSubmit={false}
+            onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 3)}
+          />
+          {p.birthdate && dobErrors[i] ? (
+            <Text style={{ color: "#e5484d", fontSize: 10 }} numberOfLines={1}>
+              {dobErrors[i]}
+            </Text>
+          ) : null}
+        </View>
+        <View style={[styles.cSex, styles.sexToggle, paxCell?.sex]}>
+          {(["Male", "Female"] as const).map((sx) => {
+            const on = p.sex === sx;
+            return (
+              <Pressable
+                key={sx}
+                onPress={() => updatePassenger(p.id, { sex: sx })}
+                style={[styles.sexBtn, { backgroundColor: on ? theme.tint : "transparent", borderColor: on ? theme.tint : theme.border }]}
+              >
+                <Text style={{ color: on ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
+                  {sx[0]}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <NationalityField
+          value={p.nationality}
+          onChange={(v) => updatePassenger(p.id, { nationality: v })}
+          style={[styles.cNat, paxCell?.nat].filter(Boolean) as ViewStyle[]}
+        />
+        <IdTypeField
+          value={p.id_type}
+          onChange={(v) => updatePassenger(p.id, { id_type: v })}
+          style={[styles.cIdType, paxCell?.idType].filter(Boolean) as ViewStyle[]}
+        />
+        <TextInput
+          ref={(el) => {
+            paxInputRefs.current[i * PAX_FIELDS + 4] = el;
+          }}
+          style={[inputStyle, styles.cId, paxCell?.id]}
+          value={p.id_number}
+          onChangeText={(v) => updatePassenger(p.id, { id_number: v })}
+          placeholder="ID / Passport"
+          placeholderTextColor={theme.greyText}
+          autoCapitalize="characters"
+          autoCorrect={false}
+          returnKeyType={i === passengers.length - 1 ? "done" : "next"}
+          blurOnSubmit={i === passengers.length - 1}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
+        />
+      </View>
+    );
+  });
+
+  const voyageLegs = (
+    <>
+      <VoyageLegPicker
+        theme={theme}
+        label="Departure"
+        loading={loadingDep}
+        voyages={depVoyages}
+        selectedId={depVoyageId}
+        onSelectVoyage={(id) => {
+          setDepVoyageId(id);
+          setDepClass("");
+        }}
+        selectedClass={depClass}
+        onSelectClass={setDepClass}
+        seatPax={seatPax}
+        seats={depSeats}
+        onEditSeats={() => setSeatModal("dep")}
+      />
+      {tripType === "round-trip" && (
+        <View style={{ marginTop: 12 }}>
+          <VoyageLegPicker
+            theme={theme}
+            label="Return"
+            loading={loadingRet}
+            voyages={retVoyages}
+            selectedId={retVoyageId}
+            onSelectVoyage={(id) => {
+              setRetVoyageId(id);
+              setRetClass("");
+            }}
+            selectedClass={retClass}
+            onSelectClass={setRetClass}
+            seatPax={seatPax}
+            seats={retSeats}
+            onEditSeats={() => setSeatModal("ret")}
+          />
+        </View>
+      )}
+      {revealed && !seatsOk && (
+        <Text style={{ color: "#e5484d", marginTop: 8, fontSize: 13 }}>
+          Not enough seats for {seatPax} passenger(s) in this class.
+        </Text>
+      )}
+    </>
+  );
+
   const totalStr = money(total, currency);
 
-  return (
-    <Background>
-      <View style={styles.screen}>
+  const screenBody = (
+    <>
         {/* Slim top bar: agent · live total · logout */}
         <View style={[styles.topBar, panelChrome]}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -947,9 +1188,9 @@ const BookingOffice = () => {
         {/* 3-column grid filling the rest of the viewport (no scroll). The
             toast now stays up until it is dismissed, so the grid gives back
             its footprint rather than letting it cover Confirm Payment. */}
-        <View style={[styles.grid, toast ? { paddingBottom: toastHeight + 24 } : null]}>
+        <View style={[gridStyle, toast ? { paddingBottom: toastHeight + 24 } : null]}>
           {/* ── Column 1: Trip ── */}
-          <View style={[styles.col, { flex: 0.85, zIndex: 3 }]}>
+          <View style={[styles.col, colTrip, { zIndex: 3 }]}>
             <View style={[styles.panel, panelChrome, { zIndex: 3 }]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Trip</Text>
 
@@ -1025,7 +1266,7 @@ const BookingOffice = () => {
               />
             </View>
 
-            <View style={[styles.panel, panelChrome, { flex: 1 }]}>
+            <View style={[styles.panel, panelChrome, paneFill]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passengers</Text>
               <View style={styles.stepperGrid}>
                 {CATEGORIES.map((c) => (
@@ -1057,66 +1298,30 @@ const BookingOffice = () => {
           </View>
 
           {/* ── Column 2: Voyage & class ── */}
-          <View style={[styles.col, { flex: 0.95, zIndex: 2 }]}>
-            <View style={[styles.panel, panelChrome, { flex: 1 }]}>
+          <View style={[styles.col, colVoyage, { zIndex: 2 }]}>
+            <View style={[styles.panel, panelChrome, paneFill]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Voyage & Class</Text>
               {!canPickVoyage ? (
                 hint("Select route, date(s), and passengers first.")
               ) : (
-                <ScrollView
-                  style={{ flex: 1 }}
-                  contentContainerStyle={{ paddingBottom: 4 }}
-                  showsVerticalScrollIndicator
-                >
-                  <VoyageLegPicker
-                    theme={theme}
-                    label="Departure"
-                    loading={loadingDep}
-                    voyages={depVoyages}
-                    selectedId={depVoyageId}
-                    onSelectVoyage={(id) => {
-                      setDepVoyageId(id);
-                      setDepClass("");
-                    }}
-                    selectedClass={depClass}
-                    onSelectClass={setDepClass}
-                    seatPax={seatPax}
-                    seats={depSeats}
-                    onEditSeats={() => setSeatModal("dep")}
-                  />
-                  {tripType === "round-trip" && (
-                    <View style={{ marginTop: 12 }}>
-                      <VoyageLegPicker
-                        theme={theme}
-                        label="Return"
-                        loading={loadingRet}
-                        voyages={retVoyages}
-                        selectedId={retVoyageId}
-                        onSelectVoyage={(id) => {
-                          setRetVoyageId(id);
-                          setRetClass("");
-                        }}
-                        selectedClass={retClass}
-                        onSelectClass={setRetClass}
-                        seatPax={seatPax}
-                        seats={retSeats}
-                        onEditSeats={() => setSeatModal("ret")}
-                      />
-                    </View>
-                  )}
-                  {revealed && !seatsOk && (
-                    <Text style={{ color: "#e5484d", marginTop: 8, fontSize: 13 }}>
-                      Not enough seats for {seatPax} passenger(s) in this class.
-                    </Text>
-                  )}
-                </ScrollView>
+                wide ? (
+                  <ScrollView
+                    style={{ flex: 1 }}
+                    contentContainerStyle={{ paddingBottom: 4 }}
+                    showsVerticalScrollIndicator
+                  >
+                    {voyageLegs}
+                  </ScrollView>
+                ) : (
+                  <View style={{ paddingBottom: 4 }}>{voyageLegs}</View>
+                )
               )}
             </View>
           </View>
 
           {/* ── Column 3: Passengers + contact + payment ── */}
-          <View style={[styles.col, { flex: 2.2, zIndex: 1 }]}>
-            <View style={[styles.panel, panelChrome, { flex: 1, zIndex: 2 }]}>
+          <View style={[styles.col, colPax, { zIndex: 1 }]}>
+            <View style={[styles.panel, panelChrome, paneFill, { zIndex: 2 }]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passenger Details</Text>
 
               {/* Printed ticket stock — kept at the top of the panel so the cashier
@@ -1182,142 +1387,33 @@ const BookingOffice = () => {
                 hint("Select route, date(s), and passengers first.")
               ) : (
                 <>
-                  <View style={styles.paxHead}>
-                    <Text style={[styles.paxHeadCell, styles.cCat, { color: theme.greyText }]}>Passenger</Text>
-                    <Text style={[styles.paxHeadCell, styles.cFirst, { color: theme.greyText }]}>First</Text>
-                    <Text style={[styles.paxHeadCell, styles.cMi, { color: theme.greyText }]}>MI</Text>
-                    <Text style={[styles.paxHeadCell, styles.cLast, { color: theme.greyText }]}>Last</Text>
-                    <Text style={[styles.paxHeadCell, styles.cDob, { color: theme.greyText }]}>Birthdate</Text>
-                    <Text style={[styles.paxHeadCell, styles.cSex, { color: theme.greyText }]}>Sex</Text>
-                    <Text style={[styles.paxHeadCell, styles.cNat, { color: theme.greyText }]}>Nationality</Text>
-                    <Text style={[styles.paxHeadCell, styles.cId, { color: theme.greyText }]}>ID Number</Text>
-                  </View>
-                  <ScrollView
-                    style={{ flex: 1 }}
-                    contentContainerStyle={{ paddingBottom: 4 }}
-                    showsVerticalScrollIndicator
-                  >
-                  {passengers.map((p, i) => {
-                    const meta = CATEGORY_META[p.category];
-                    const seat = seatByPassenger[p.id];
-                    const nth = passengers
-                      .slice(0, i + 1)
-                      .filter((x) => x.category === p.category).length;
-                    return (
-                      <View
-                        key={p.id}
-                        style={[styles.paxRow, { borderLeftColor: meta.color, backgroundColor: meta.color + "0d" }]}
-                      >
-                        <View style={styles.cCat}>
-                          <Text style={{ color: theme.text, fontSize: 12, fontWeight: "700" }} numberOfLines={1}>
-                            {meta.label} {nth}
-                          </Text>
-                          <Text style={{ color: theme.greyText, fontSize: 10 }} numberOfLines={1}>
-                            {meta.seatOccupying
-                              ? `Seat ${seat?.dep ?? "—"}${tripType === "round-trip" ? ` / ${seat?.ret ?? "—"}` : ""}`
-                              : "Lap"}
-                          </Text>
-                        </View>
-                        <TextInput
-                          ref={(el) => {
-                            paxInputRefs.current[i * PAX_FIELDS + 0] = el;
-                          }}
-                          style={[inputStyle, styles.cFirst]}
-                          value={p.first_name}
-                          onChangeText={(v) => updatePassenger(p.id, { first_name: v })}
-                          placeholder="First"
-                          placeholderTextColor={theme.greyText}
-                          returnKeyType="next"
-                          blurOnSubmit={false}
-                          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 0)}
-                        />
-                        <TextInput
-                          ref={(el) => {
-                            paxInputRefs.current[i * PAX_FIELDS + 1] = el;
-                          }}
-                          style={[inputStyle, styles.cMi]}
-                          value={p.middle_initial}
-                          onChangeText={(v) => updatePassenger(p.id, { middle_initial: v.slice(0, 2) })}
-                          placeholder="MI"
-                          maxLength={2}
-                          placeholderTextColor={theme.greyText}
-                          returnKeyType="next"
-                          blurOnSubmit={false}
-                          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 1)}
-                        />
-                        <TextInput
-                          ref={(el) => {
-                            paxInputRefs.current[i * PAX_FIELDS + 2] = el;
-                          }}
-                          style={[inputStyle, styles.cLast]}
-                          value={p.last_name}
-                          onChangeText={(v) => updatePassenger(p.id, { last_name: v })}
-                          placeholder="Last"
-                          placeholderTextColor={theme.greyText}
-                          returnKeyType="next"
-                          blurOnSubmit={false}
-                          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 2)}
-                        />
-                        <View style={styles.cDob}>
-                          <DateField
-                            ref={(el) => {
-                              paxInputRefs.current[i * PAX_FIELDS + 3] = el;
-                            }}
-                            mode="past"
-                            value={p.birthdate}
-                            onChange={(d) => updatePassenger(p.id, { birthdate: d })}
-                            inputStyle={styles.cInput}
-                            error={!!p.birthdate && !!dobErrors[i]}
-                            returnKeyType="next"
-                            blurOnSubmit={false}
-                            onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 3)}
-                          />
-                          {p.birthdate && dobErrors[i] ? (
-                            <Text style={{ color: "#e5484d", fontSize: 10 }} numberOfLines={1}>
-                              {dobErrors[i]}
-                            </Text>
-                          ) : null}
-                        </View>
-                        <View style={[styles.cSex, styles.sexToggle]}>
-                          {(["Male", "Female"] as const).map((sx) => {
-                            const on = p.sex === sx;
-                            return (
-                              <Pressable
-                                key={sx}
-                                onPress={() => updatePassenger(p.id, { sex: sx })}
-                                style={[styles.sexBtn, { backgroundColor: on ? theme.tint : "transparent", borderColor: on ? theme.tint : theme.border }]}
-                              >
-                                <Text style={{ color: on ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                                  {sx[0]}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                        <NationalityField
-                          value={p.nationality}
-                          onChange={(v) => updatePassenger(p.id, { nationality: v })}
-                          style={styles.cNat}
-                        />
-                        <TextInput
-                          ref={(el) => {
-                            paxInputRefs.current[i * PAX_FIELDS + 4] = el;
-                          }}
-                          style={[inputStyle, styles.cId]}
-                          value={p.id_number}
-                          onChangeText={(v) => updatePassenger(p.id, { id_number: v })}
-                          placeholder="ID / Passport"
-                          placeholderTextColor={theme.greyText}
-                          autoCapitalize="characters"
-                          autoCorrect={false}
-                          returnKeyType={i === passengers.length - 1 ? "done" : "next"}
-                          blurOnSubmit={i === passengers.length - 1}
-                          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
-                        />
-                      </View>
-                    );
-                  })}
-                  </ScrollView>
+                  {/* Column headings only label anything while the row is a
+                      single line; once it wraps, each field falls back to its
+                      own placeholder. */}
+                  {!compact && (
+                    <View style={styles.paxHead}>
+                      <Text style={[styles.paxHeadCell, styles.cCat, { color: theme.greyText }]}>Passenger</Text>
+                      <Text style={[styles.paxHeadCell, styles.cFirst, { color: theme.greyText }]}>First</Text>
+                      <Text style={[styles.paxHeadCell, styles.cMi, { color: theme.greyText }]}>MI</Text>
+                      <Text style={[styles.paxHeadCell, styles.cLast, { color: theme.greyText }]}>Last</Text>
+                      <Text style={[styles.paxHeadCell, styles.cDob, { color: theme.greyText }]}>Birthdate</Text>
+                      <Text style={[styles.paxHeadCell, styles.cSex, { color: theme.greyText }]}>Sex</Text>
+                      <Text style={[styles.paxHeadCell, styles.cNat, { color: theme.greyText }]}>Nationality</Text>
+                      <Text style={[styles.paxHeadCell, styles.cIdType, { color: theme.greyText }]}>ID Type</Text>
+                      <Text style={[styles.paxHeadCell, styles.cId, { color: theme.greyText }]}>ID Number</Text>
+                    </View>
+                  )}
+                  {wide ? (
+                    <ScrollView
+                      style={{ flex: 1 }}
+                      contentContainerStyle={{ paddingBottom: 4 }}
+                      showsVerticalScrollIndicator
+                    >
+                      {paxRows}
+                    </ScrollView>
+                  ) : (
+                    <View style={{ paddingBottom: 4 }}>{paxRows}</View>
+                  )}
                 </>
               )}
             </View>
@@ -1496,7 +1592,25 @@ const BookingOffice = () => {
             </View>
           </View>
         </View>
-      </View>
+    </>
+  );
+
+  return (
+    <Background>
+      {/* Only the desk layout fits the whole counter in one viewport; at any
+          narrower width the panels stack and the page itself has to scroll. */}
+      {wide ? (
+        <View style={[styles.screen, styles.screenFill]}>{screenBody}</View>
+      ) : (
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.screen}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {screenBody}
+        </ScrollView>
+      )}
 
       {/* Seat override modals */}
       <SeatAssignModal
@@ -1564,9 +1678,12 @@ const BookingOffice = () => {
 export default BookingOffice;
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, gap: 10 },
+  screen: { gap: 10 },
+  screenFill: { flex: 1 },
   topBar: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 14,
@@ -1575,7 +1692,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   logoutBtn: { flexDirection: "row", alignItems: "center", gap: 5 },
-  grid: { flex: 1, flexDirection: "row", gap: 10 },
+  grid: { flexDirection: "row", gap: 10 },
+  gridFill: { flex: 1 },
+  gridWrap: { flexWrap: "wrap" },
+  gridStack: { flexDirection: "column", gap: 10 },
   col: { gap: 10 },
   panel: { borderRadius: 14, borderWidth: 1, padding: 12, gap: 8 },
   panelTitle: {
@@ -1646,7 +1766,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 14,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width. In the passenger row that let
+    // First/Last/ID hold their full size and starve the flexible columns beside
+    // them — Birthdate collapsed to nothing. Views already get min-width:0 from
+    // react-native-web; inputs have to ask.
+    minWidth: 0,
   },
+  cInputInvalid: { borderColor: "#e5484d" },
   stepperGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   stepper: {
     flexDirection: "row",
@@ -1708,6 +1835,7 @@ const styles = StyleSheet.create({
   },
   paxHead: { flexDirection: "row", gap: 6, paddingLeft: 12, paddingRight: 6, marginBottom: 2 },
   paxHeadCell: { fontSize: 10, fontWeight: "700", letterSpacing: 0.5, textTransform: "uppercase" },
+  paxRowWrap: { flexWrap: "wrap", alignItems: "flex-start", paddingVertical: 8 },
   paxRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1723,7 +1851,7 @@ const styles = StyleSheet.create({
   cFirst: { flex: 1.4 },
   cMi: { width: 42 },
   cLast: { flex: 1.4 },
-  cDob: { flex: 1.6 },
+  cDob: { flex: 1.4 },
   cSex: { width: 84 },
   sexToggle: { flexDirection: "row", gap: 4 },
   sexBtn: {
@@ -1734,8 +1862,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  cNat: { flex: 1.2 },
-  cId: { flex: 1.2 },
+  cNat: { flex: 1.1 },
+  cIdType: { flex: 1.3 },
+  cId: { flex: 1.1 },
   payRow: { flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
   quickCashRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   quickCashBtn: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },

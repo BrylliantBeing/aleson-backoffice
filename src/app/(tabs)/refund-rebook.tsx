@@ -6,7 +6,8 @@ import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
 import { FontAwesome } from "@expo/vector-icons";
-import React, { useState } from "react";
+import { useLocalSearchParams } from "expo-router";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -93,6 +94,7 @@ const STATUS_COLOR: Record<string, string> = {
 const RefundRebooking = () => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
+  const params = useLocalSearchParams<{ ref?: string }>();
 
   const [reference, setReference] = useState("");
   const [booking, setBooking] = useState<OfficeBooking | null>(null);
@@ -132,6 +134,15 @@ const RefundRebooking = () => {
       setLoading(false);
     }
   };
+
+  // A sale opened from the Transactions tab arrives with its reference, so the
+  // cashier lands on the booking already looked up instead of retyping it.
+  useEffect(() => {
+    const incoming = typeof params.ref === "string" ? params.ref : null;
+    if (!incoming) return;
+    setReference(incoming);
+    runSearch(incoming);
+  }, [params.ref]);
 
   const refresh = () => {
     setRefundTarget(null);
@@ -327,9 +338,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  bookingHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  bookingHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
   bookingRef: { fontSize: 18, fontWeight: "800", fontFamily: "Lato" },
   statusBadge: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "flex-start" },
-  ticketRow: { flexDirection: "row", gap: 10, borderWidth: 1, borderRadius: 12, padding: 12 },
+  ticketRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
   actionBtn: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
 });

@@ -151,7 +151,10 @@ const styles = StyleSheet.create({
   },
   toast: {
     flexDirection: "row",
-    width: 330,
+    // Fills a narrow screen instead of overflowing it, but never grows past the
+    // width the hand-over figures were laid out for.
+    width: "100%",
+    maxWidth: 330,
     borderRadius: 12,
     borderWidth: 1,
     overflow: "hidden",

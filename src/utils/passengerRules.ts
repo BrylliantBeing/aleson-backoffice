@@ -82,6 +82,23 @@ export function validateDob(
   }
 }
 
+/**
+ * Shortest name the manifest accepts. The gate matches the printed name against
+ * the government ID presented, so a single initial ("J") can't be checked
+ * against anything — mirrors the same rule on the public booking site.
+ */
+export const MIN_NAME_LENGTH = 2;
+
+/** Returns an error string for a too-short name, or null when it's usable. */
+export function validateName(raw: string, label: string): string | null {
+  const value = raw.trim();
+  if (!value) return `${label} is required.`;
+  if (value.length < MIN_NAME_LENGTH) {
+    return `${label} must be at least ${MIN_NAME_LENGTH} characters.`;
+  }
+  return null;
+}
+
 // Money formatting moved to utils/currency.ts when fares gained a currency —
 // an amount can no longer be rendered without knowing which one it is in.
 export { money, moneyWhole } from "./currency";

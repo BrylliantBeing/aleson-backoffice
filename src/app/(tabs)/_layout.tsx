@@ -1,4 +1,5 @@
 import Colors from "@/constants/Colors";
+import { useLayout } from "@/hooks/useLayout";
 import { useAuth } from "@/context/AuthContext";
 import { FontAwesome } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
@@ -10,6 +11,7 @@ export default function TabsLayout() {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
   const { agent, loading } = useAuth();
+  const { compact } = useLayout();
 
   if (loading) {
     return (
@@ -37,7 +39,13 @@ export default function TabsLayout() {
           backgroundColor: theme.cardBackground,
           borderTopColor: theme.greyText + "33",
         },
-        tabBarLabelStyle: { fontFamily: "Lato" },
+        // Four labels have to share a phone's width — "Refund & Rebooking" is
+        // the one that decides how small they need to get.
+        tabBarLabelStyle: {
+          fontFamily: "Lato",
+          fontSize: compact ? 10 : 12,
+        },
+        tabBarItemStyle: { paddingHorizontal: compact ? 2 : 8 },
       }}
     >
       <Tabs.Screen
@@ -56,6 +64,15 @@ export default function TabsLayout() {
           href: null,
           tabBarIcon: ({ color, size }) => (
             <FontAwesome name="line-chart" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="transactions"
+        options={{
+          title: "Transactions",
+          tabBarIcon: ({ color, size }) => (
+            <FontAwesome name="history" size={size} color={color} />
           ),
         }}
       />
