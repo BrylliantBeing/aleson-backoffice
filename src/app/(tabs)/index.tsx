@@ -12,6 +12,7 @@ import VoyageLegPicker from "@/components/VoyageLegPicker";
 import Colors from "@/constants/Colors";
 import { DEFAULT_NATIONALITY } from "@/constants/nationalities";
 import { useAuth } from "@/context/AuthContext";
+import { useElementWidth } from "@/hooks/useElementWidth";
 import { useLayout } from "@/hooks/useLayout";
 import { API_BASE, apiFetch } from "@/utils/api";
 import {
@@ -22,6 +23,7 @@ import {
   SEAT_OCCUPYING,
   validateDob,
   validateName,
+  validatePhone,
 } from "@/utils/passengerRules";
 import { DEFAULT_CURRENCY, money, moneyWhole } from "@/utils/currency";
 import { autoAssignSeats } from "@/utils/seatAssign";
@@ -74,6 +76,10 @@ interface PassengerRow {
   // boarding, and a number with no document type can't be checked against it.
   id_type: string;
   id_number: string;
+  // Consent to share a cabin/suite with the opposite sex. Per passenger, not
+  // per booking: the backend evaluates it per occupant, and consent given by
+  // one traveller cannot stand in for another's.
+  mixed_ok: boolean;
 }
 
 const emptyCounts = (): Record<Category, number> =>
@@ -117,10 +123,32 @@ const legCurrency = (v: Voyage | undefined, className: string): string | null =>
   return v.class_name?.[className]?.ticket_type[0]?.currency ?? null;
 };
 
+/** Panel widths the passenger table needs for each arrangement. Nine columns
+ *  on one line only stop clipping — "ID / Passport" is the first to go — once
+ *  the panel clears ~1060px; below ~520 even two lines are too tight and the
+ *  row stacks. Both are the panel's outer width, padding included. */
+const PAX_ROW_MIN = 1060;
+const PAX_WRAP_MIN = 520;
+
+/** Panel width below which the category steppers drop from two per line to
+ *  one. Two-up, each box is ~47% of the panel, and under ~180px the +/-
+ *  controls eat the label — leaving nothing but a coloured dot to tell
+ *  "Regular" from "Senior". */
+const STEPPER_TWO_UP_MIN = 400;
+
+/** Panel width below which Origin and Destination stack instead of sharing a
+ *  line. Side by side each select gets under ~135px, which is narrower than a
+ *  port name plus its chevron — "Zamboanga" wraps onto a second line. */
+const ROUTE_SIDE_BY_SIDE_MIN = 320;
+
 const BookingOffice = () => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
   const { compact, medium, wide } = useLayout();
+  // Both panels lay out against their own width — see useElementWidth.
+  const [paxPanelW, onPaxPanelLayout] = useElementWidth();
+  const [paxSetupW, onPaxSetupLayout] = useElementWidth();
+  const [tripW, onTripLayout] = useElementWidth();
   const { agent, logout } = useAuth();
 
   // ── Trip setup ──────────────────────────────────────────────────────────
@@ -133,9 +161,10 @@ const BookingOffice = () => {
   const [activeLeg, setActiveLeg] = useState<"dep" | "ret">("dep");
   const [counts, setCounts] = useState<Record<Category, number>>(emptyCounts());
 
-  // Route options from /routes
-  const [origins, setOrigins] = useState<string[]>([]);
-  const [destsByOrigin, setDestsByOrigin] = useState<Record<string, string[]>>({});
+  // Route master data from /routes. Kept raw: it lists every route the operator
+  // has ever defined, including ones with no sailing on the timetable, so the
+  // pickers below narrow it against the schedules before offering it.
+  const [routePairs, setRoutePairs] = useState<{ origin: string; destination: string }[]>([]);
   // Port name → ports.code, which the printed voyage number is built from.
   const [portCodes, setPortCodes] = useState<Record<string, string>>({});
 
@@ -156,9 +185,6 @@ const BookingOffice = () => {
   // ── Seats (aligned to seat-occupying passenger order) ───────────────────
   const [depSeats, setDepSeats] = useState<string[]>([]);
   const [retSeats, setRetSeats] = useState<string[]>([]);
-  // Consent to place mixed genders in one cabin/suite (single-gender otherwise).
-  // Applied to every passenger in this booking (agents handle one party).
-  const [mixedCabinOk, setMixedCabinOk] = useState(false);
   const [seatModal, setSeatModal] = useState<null | "dep" | "ret">(null);
 
   // ── Passengers + contact ────────────────────────────────────────────────
@@ -250,17 +276,14 @@ const BookingOffice = () => {
             destination_code?: string;
           }[]
         ) => {
-          const oset = new Set<string>();
-          const map: Record<string, string[]> = {};
           const codes: Record<string, string> = {};
           rows.forEach((r) => {
-            oset.add(r.origin);
-            (map[r.origin] ??= []).push(r.destination);
             if (r.origin_code) codes[r.origin] = r.origin_code;
             if (r.destination_code) codes[r.destination] = r.destination_code;
           });
-          setOrigins([...oset]);
-          setDestsByOrigin(map);
+          setRoutePairs(
+            rows.map((r) => ({ origin: r.origin, destination: r.destination }))
+          );
           setPortCodes(codes);
         }
       )
@@ -292,6 +315,7 @@ const BookingOffice = () => {
               nationality: DEFAULT_NATIONALITY,
               id_type: "",
               id_number: "",
+              mixed_ok: false,
             }
           );
         }
@@ -326,6 +350,32 @@ const BookingOffice = () => {
     !!depDate &&
     (tripType === "one-way" || !!retDate) &&
     totalPax > 0;
+
+  // Port pickers. A route with no active schedule sails on no date, so offering
+  // it only walks the agent into a fully greyed calendar with nothing to explain
+  // it — the website derives its ports from the timetable for the same reason.
+  // Narrow the route list to the pairs that actually have a sailing; before the
+  // schedules land there is nothing to narrow against, so offer the routes as-is
+  // rather than briefly showing an empty picker.
+  const { origins, destsByOrigin } = useMemo(() => {
+    const sailed = new Set(
+      allVoyages
+        .filter((v) => v.isActive !== false)
+        .map((v) => `${v.origin}\u0000${v.destination}`)
+    );
+    const served =
+      sailed.size === 0
+        ? routePairs
+        : routePairs.filter((r) => sailed.has(`${r.origin}\u0000${r.destination}`));
+
+    const oset = new Set<string>();
+    const map: Record<string, string[]> = {};
+    served.forEach((r) => {
+      oset.add(r.origin);
+      (map[r.origin] ??= []).push(r.destination);
+    });
+    return { origins: [...oset], destsByOrigin: map };
+  }, [routePairs, allVoyages]);
 
   // Calendar greying: which dates the chosen route actually sails. Return leg is
   // the reverse route (destination → origin).
@@ -529,7 +579,11 @@ const BookingOffice = () => {
         p.nationality.trim() &&
         !dobErrors[i]
     );
-  const contactComplete = !!contactLast.trim() && (!!email.trim() || !!phone.trim());
+  // Optional here: the counter takes a phone OR an email. Only a number that
+  // was actually typed has to be a real one.
+  const phoneError = validatePhone(phone, false);
+  const contactComplete =
+    !!contactLast.trim() && (!!email.trim() || !!phone.trim()) && !phoneError;
   const tenderedNum = parseFloat(tendered) || 0;
   const cashOk = method !== "cash" || tenderedNum >= total;
   const change = method === "cash" ? tenderedNum - total : null;
@@ -549,13 +603,20 @@ const BookingOffice = () => {
   const missingPaxFields = (p: PassengerRow) => {
     const missing: string[] = [];
     if (!p.first_name.trim()) missing.push("first name");
-    if (!p.middle_initial.trim()) missing.push("middle initial");
     if (!p.last_name.trim()) missing.push("last name");
     if (!p.birthdate) missing.push("birthdate");
     if (!p.sex) missing.push("sex");
     if (!p.nationality.trim()) missing.push("nationality");
-    if (!p.id_type.trim()) missing.push("ID type");
-    if (!p.id_number.trim()) missing.push("ID number");
+    // Infants ride on a lap under the parent's document and hold no ID of their
+    // own, so theirs is optional rather than hidden — the family often does have
+    // a passport for them, and Malaysian immigration wants it on the Sandakan
+    // run. Half an entry is still rejected: a number with no document type
+    // can't be checked against anything at the gate.
+    const idOptional = p.category === "infant";
+    const hasIdType = !!p.id_type.trim();
+    const hasIdNumber = !!p.id_number.trim();
+    if (!hasIdType && (!idOptional || hasIdNumber)) missing.push("ID type");
+    if (!hasIdNumber && (!idOptional || hasIdType)) missing.push("ID number");
     return missing;
   };
 
@@ -594,6 +655,7 @@ const BookingOffice = () => {
   if (!email.trim() && !phone.trim()) {
     confirmBlockers.push("Enter a contact phone number or email.");
   }
+  if (phoneError) confirmBlockers.push(`Contact phone: ${phoneError}`);
   if (!method) {
     confirmBlockers.push("Choose a payment method.");
   } else if (!cashOk) {
@@ -637,7 +699,7 @@ const BookingOffice = () => {
         id_type: p.id_type.trim() || null,
         id_number: p.id_number.trim() || null,
         passenger_type: CATEGORY_TO_DB[p.category],
-        mixed_ok: mixedCabinOk,
+        mixed_ok: p.mixed_ok,
         departure_seat: depSeat,
         return_seat: retSeat,
       };
@@ -868,7 +930,6 @@ const BookingOffice = () => {
     setRetClass("");
     setDepSeats([]);
     setRetSeats([]);
-    setMixedCabinOk(false);
     setPassengers([]);
     setContactFirst("");
     setContactLast("");
@@ -938,23 +999,67 @@ const BookingOffice = () => {
   const colVoyage: ViewStyle | null = wide ? { flex: 0.95 } : compact ? null : halfCol;
   const colPax: ViewStyle | null = wide ? { flex: 2.2 } : compact ? null : { flexBasis: "100%" };
 
-  // A phone cannot show the nine passenger columns side by side, so the row
-  // wraps into lines instead: name, then birthdate and sex, then the travel
-  // document. The bases decide where the breaks fall (each line sums under
-  // 100%, the next field pushes past it); the grows keep each line flush.
-  const paxCell = compact
-    ? {
-        cat: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
-        first: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
-        mi: { flexBasis: "13%", flexGrow: 13 } as FlexStyle,
-        last: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
-        dob: { flexBasis: "55%", flexGrow: 55 } as FlexStyle,
-        sex: { flexBasis: "33%", flexGrow: 33 } as FlexStyle,
-        nat: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
-        idType: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
-        id: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
-      }
-    : null;
+  const routeSideBySide =
+    tripW === null ? !compact : tripW >= ROUTE_SIDE_BY_SIDE_MIN;
+
+  // Two steppers per line while the panel can still give each one its label;
+  // one per line otherwise. Same reasoning as the passenger table below.
+  const stepperTwoUp =
+    paxSetupW === null ? !compact : paxSetupW >= STEPPER_TWO_UP_MIN;
+
+  // How the nine passenger columns are arranged is decided by the panel's own
+  // width, not the window's: on a desk screen this panel is one column of a
+  // three-column grid, so a 1280px window gives it less room than a 1024px one
+  // (where it spans the full page). Measuring the panel is what keeps the
+  // fields legible at every width instead of only the two the grid was drawn
+  // for. Before the first layout pass, fall back to the viewport's own guess.
+  const paxTier: "row" | "wrap" | "stack" =
+    paxPanelW === null
+      ? wide
+        ? "row"
+        : compact
+          ? "stack"
+          : "wrap"
+      : paxPanelW >= PAX_ROW_MIN
+        ? "row"
+        : paxPanelW >= PAX_WRAP_MIN
+          ? "wrap"
+          : "stack";
+
+  // Below a single line the row wraps into lines instead: at "wrap" the name
+  // and the travel document get a line each; at "stack" (a phone) it breaks
+  // down further into name, birthdate/sex, then document. The bases decide
+  // where the breaks fall — each line sums under 100% and the next field
+  // pushes past it — and the grows keep each line flush. The sums leave room
+  // for the 6px gaps, which count against the 100% too.
+  const paxCell =
+    paxTier === "stack"
+      ? {
+          cat: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+          first: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
+          mi: { flexBasis: "13%", flexGrow: 13 } as FlexStyle,
+          last: { flexBasis: "38%", flexGrow: 38 } as FlexStyle,
+          dob: { flexBasis: "55%", flexGrow: 55 } as FlexStyle,
+          sex: { flexBasis: "33%", flexGrow: 33 } as FlexStyle,
+          nat: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
+          idType: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
+          id: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+          mixed: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+        }
+      : paxTier === "wrap"
+        ? {
+            cat: { flexBasis: "21%", flexGrow: 21 } as FlexStyle,
+            first: { flexBasis: "31%", flexGrow: 31 } as FlexStyle,
+            mi: { flexBasis: "9%", flexGrow: 9 } as FlexStyle,
+            last: { flexBasis: "31%", flexGrow: 31 } as FlexStyle,
+            dob: { flexBasis: "18%", flexGrow: 18 } as FlexStyle,
+            sex: { flexBasis: "13%", flexGrow: 13 } as FlexStyle,
+            nat: { flexBasis: "19%", flexGrow: 19 } as FlexStyle,
+            idType: { flexBasis: "20%", flexGrow: 20 } as FlexStyle,
+            id: { flexBasis: "20%", flexGrow: 20 } as FlexStyle,
+            mixed: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+          }
+        : null;
   const hint = (msg: string) => (
     <Text style={{ color: theme.greyText, fontSize: 13, fontStyle: "italic" }}>{msg}</Text>
   );
@@ -970,7 +1075,7 @@ const BookingOffice = () => {
         key={p.id}
         style={[
           styles.paxRow,
-          compact && styles.paxRowWrap,
+          paxTier !== "row" && styles.paxRowWrap,
           { borderLeftColor: meta.color, backgroundColor: meta.color + "0d" },
         ]}
       >
@@ -1078,6 +1183,7 @@ const BookingOffice = () => {
         <IdTypeField
           value={p.id_type}
           onChange={(v) => updatePassenger(p.id, { id_type: v })}
+          placeholder={p.category === "infant" ? "ID type (optional)" : "ID type"}
           style={[styles.cIdType, paxCell?.idType].filter(Boolean) as ViewStyle[]}
         />
         <TextInput
@@ -1087,7 +1193,7 @@ const BookingOffice = () => {
           style={[inputStyle, styles.cId, paxCell?.id]}
           value={p.id_number}
           onChangeText={(v) => updatePassenger(p.id, { id_number: v })}
-          placeholder="ID / Passport"
+          placeholder={p.category === "infant" ? "Optional" : "ID / Passport"}
           placeholderTextColor={theme.greyText}
           autoCapitalize="characters"
           autoCorrect={false}
@@ -1095,6 +1201,29 @@ const BookingOffice = () => {
           blurOnSubmit={i === passengers.length - 1}
           onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
         />
+        {isRoomBooking && (
+          <Pressable
+            onPress={() => updatePassenger(p.id, { mixed_ok: !p.mixed_ok })}
+            style={[styles.cMixed, styles.mixedCell, paxCell?.mixed]}
+          >
+            <View
+              style={[
+                styles.mixedBox,
+                { borderColor: p.mixed_ok ? theme.tint : theme.border },
+                p.mixed_ok && { backgroundColor: theme.tint },
+              ]}
+            >
+              {p.mixed_ok && <FontAwesome name="check" size={11} color="#fff" />}
+            </View>
+            {/* Column headings only exist on the single-line tier, so once the
+                row wraps the checkbox has to name itself. */}
+            {paxTier !== "row" && (
+              <Text style={{ color: theme.text, fontSize: 12 }} numberOfLines={1}>
+                OK to share a mixed-gender cabin
+              </Text>
+            )}
+          </Pressable>
+        )}
       </View>
     );
   });
@@ -1191,7 +1320,10 @@ const BookingOffice = () => {
         <View style={[gridStyle, toast ? { paddingBottom: toastHeight + 24 } : null]}>
           {/* ── Column 1: Trip ── */}
           <View style={[styles.col, colTrip, { zIndex: 3 }]}>
-            <View style={[styles.panel, panelChrome, { zIndex: 3 }]}>
+            <View
+              onLayout={onTripLayout}
+              style={[styles.panel, panelChrome, { zIndex: 3 }]}
+            >
               <Text style={[styles.panelTitle, { color: theme.text }]}>Trip</Text>
 
               <View style={styles.pillRow}>
@@ -1214,7 +1346,13 @@ const BookingOffice = () => {
                 })}
               </View>
 
-              <View style={[styles.row2, { zIndex: 3 }]}>
+              <View
+                style={[
+                  styles.row2,
+                  !routeSideBySide && styles.row2Stacked,
+                  { zIndex: 3 },
+                ]}
+              >
                 <View style={{ flex: 1, zIndex: 2 }}>
                   <CustomSelectList
                     data={origins.map((o, i) => ({ key: String(i), value: o }))}
@@ -1266,13 +1404,18 @@ const BookingOffice = () => {
               />
             </View>
 
-            <View style={[styles.panel, panelChrome, paneFill]}>
+            <View onLayout={onPaxSetupLayout} style={[styles.panel, panelChrome, paneFill]}>
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passengers</Text>
               <View style={styles.stepperGrid}>
                 {CATEGORIES.map((c) => (
                   <View
                     key={c.key}
-                    style={[styles.stepper, { borderColor: c.color, backgroundColor: c.color + "14" }]}
+                    style={[
+                      styles.stepper,
+                      // Two-up until the box is too narrow to keep its label.
+                      { width: stepperTwoUp ? "47%" : "100%" },
+                      { borderColor: c.color, backgroundColor: c.color + "14" },
+                    ]}
                   >
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
                       <View style={[styles.dot, { backgroundColor: c.color }]} />
@@ -1321,7 +1464,10 @@ const BookingOffice = () => {
 
           {/* ── Column 3: Passengers + contact + payment ── */}
           <View style={[styles.col, colPax, { zIndex: 1 }]}>
-            <View style={[styles.panel, panelChrome, paneFill, { zIndex: 2 }]}>
+            <View
+              onLayout={onPaxPanelLayout}
+              style={[styles.panel, panelChrome, paneFill, { zIndex: 2 }]}
+            >
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passenger Details</Text>
 
               {/* Printed ticket stock — kept at the top of the panel so the cashier
@@ -1364,24 +1510,14 @@ const BookingOffice = () => {
               </View>
 
               {isRoomBooking && canPickVoyage && (
-                <Pressable
-                  style={styles.mixedRow}
-                  onPress={() => setMixedCabinOk((v) => !v)}
-                >
-                  <View
-                    style={[
-                      styles.mixedBox,
-                      { borderColor: mixedCabinOk ? theme.tint : theme.border },
-                      mixedCabinOk && { backgroundColor: theme.tint },
-                    ]}
-                  >
-                    {mixedCabinOk && <FontAwesome name="check" size={12} color="#fff" />}
-                  </View>
-                  <Text style={[styles.mixedText, { color: theme.text }]}>
-                    Allow a mixed-gender cabin for this booking (e.g. married couples).
-                    Cabins/suites are otherwise single-gender.
+                <View style={styles.mixedRow}>
+                  <FontAwesome name="info-circle" size={13} color={theme.greyText} />
+                  <Text style={[styles.mixedText, { color: theme.greyText }]}>
+                    Cabins and suites are single-gender. Tick "Mixed OK" on each
+                    passenger happy to share with the opposite sex (e.g. married
+                    couples) — ask them, one answer cannot cover the whole party.
                   </Text>
-                </Pressable>
+                </View>
               )}
               {!canPickVoyage ? (
                 hint("Select route, date(s), and passengers first.")
@@ -1390,7 +1526,7 @@ const BookingOffice = () => {
                   {/* Column headings only label anything while the row is a
                       single line; once it wraps, each field falls back to its
                       own placeholder. */}
-                  {!compact && (
+                  {paxTier === "row" && (
                     <View style={styles.paxHead}>
                       <Text style={[styles.paxHeadCell, styles.cCat, { color: theme.greyText }]}>Passenger</Text>
                       <Text style={[styles.paxHeadCell, styles.cFirst, { color: theme.greyText }]}>First</Text>
@@ -1401,6 +1537,9 @@ const BookingOffice = () => {
                       <Text style={[styles.paxHeadCell, styles.cNat, { color: theme.greyText }]}>Nationality</Text>
                       <Text style={[styles.paxHeadCell, styles.cIdType, { color: theme.greyText }]}>ID Type</Text>
                       <Text style={[styles.paxHeadCell, styles.cId, { color: theme.greyText }]}>ID Number</Text>
+                      {isRoomBooking && (
+                        <Text style={[styles.paxHeadCell, styles.cMixed, { color: theme.greyText }]}>Mixed OK</Text>
+                      )}
                     </View>
                   )}
                   {wide ? (
@@ -1483,7 +1622,7 @@ const BookingOffice = () => {
                   </View>
                   <View style={styles.row2}>
                     <TextInput
-                      style={[inputStyle, { flex: 1 }]}
+                      style={[inputStyle, { flex: 1 }, !!phoneError && styles.cInputInvalid]}
                       value={phone}
                       onChangeText={setPhone}
                       placeholder="Phone"
@@ -1707,7 +1846,7 @@ const styles = StyleSheet.create({
   },
   mixedRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 8,
     marginTop: 8,
     marginBottom: 4,
@@ -1730,6 +1869,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   row2: { flexDirection: "row", gap: 10 },
+  row2Stacked: { flexDirection: "column" },
   ticketStrip: {
     flexDirection: "row",
     alignItems: "center",
@@ -1783,7 +1923,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    width: "47%",
     flexGrow: 1,
   },
   stepperControls: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -1851,7 +1990,8 @@ const styles = StyleSheet.create({
   cFirst: { flex: 1.4 },
   cMi: { width: 42 },
   cLast: { flex: 1.4 },
-  cDob: { flex: 1.4 },
+  // Sized for a full MM-DD-YYYY, two characters wider than the old 2-digit year.
+  cDob: { flex: 1.6 },
   cSex: { width: 84 },
   sexToggle: { flexDirection: "row", gap: 4 },
   sexBtn: {
@@ -1865,6 +2005,8 @@ const styles = StyleSheet.create({
   cNat: { flex: 1.1 },
   cIdType: { flex: 1.3 },
   cId: { flex: 1.1 },
+  cMixed: { width: 62 },
+  mixedCell: { flexDirection: "row", alignItems: "center", gap: 6 },
   payRow: { flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
   quickCashRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   quickCashBtn: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },

@@ -47,6 +47,10 @@ interface OfficeTicket {
   eligible: boolean;
   refundable: boolean;
   cancellation_fee: number;
+  /** Rate behind cancellation_fee, as a fraction — 0.10 before departure, 0.40 after. */
+  fee_rate: number;
+  /** Whether this ticket's own sailing has already gone. */
+  trip_departed: boolean;
   max_refund: number;
   cancellation_deadline: string | null;
   rebook_dates: string[];
@@ -66,7 +70,10 @@ interface OfficeBooking {
 }
 
 interface CancellationPolicy {
-  fee_rate: number;
+  /** Charged on a refund or a rebooking alike, as a fraction of the fare. */
+  fee_rate_before_departure: number;
+  fee_rate_after_departure: number;
+  /** Days after the sailing's departure that a refund can still be claimed. */
   window_days: number;
 }
 
@@ -192,8 +199,9 @@ const RefundRebooking = () => {
                 </Text>
                 {policy && (
                   <Text style={{ color: theme.greyText, fontSize: 12, marginTop: 2 }}>
-                    Cancellation: {Math.round(policy.fee_rate * 100)}% fee, within {policy.window_days} days of
-                    purchase
+                    Refund or rebooking: {Math.round(policy.fee_rate_before_departure * 100)}% fee before
+                    departure, {Math.round(policy.fee_rate_after_departure * 100)}% after · refundable up to{" "}
+                    {policy.window_days} days after the sailing
                   </Text>
                 )}
               </View>
@@ -235,7 +243,13 @@ const RefundRebooking = () => {
                     )}
                     {t.eligible && !t.refundable && (
                       <Text style={{ color: theme.greyText, fontSize: 11, marginTop: 2 }}>
-                        Cancellation window closed {formatDate(t.cancellation_deadline)} — rebooking only
+                        Cancellation window closed {formatDate(t.cancellation_deadline)} — this ticket is final
+                      </Text>
+                    )}
+                    {t.eligible && t.refundable && (
+                      <Text style={{ color: theme.greyText, fontSize: 11, marginTop: 2 }}>
+                        {Math.round(t.fee_rate * 100)}% fee ({money(t.cancellation_fee, t.currency)}) —
+                        {t.trip_departed ? " sailing has departed" : " sailing has not departed"}
                       </Text>
                     )}
                     {t.status === "Cancelled" && t.rebooked_to_ticket_fk && (
@@ -265,6 +279,8 @@ const RefundRebooking = () => {
                                 passenger_name: t.passenger_name,
                                 max_refund: t.max_refund,
                                 cancellation_fee: t.cancellation_fee,
+                                fee_rate: t.fee_rate,
+                                trip_departed: t.trip_departed,
                               })
                             }
                             style={[styles.actionBtn, { borderColor: "#e5484d" }]}
@@ -283,6 +299,9 @@ const RefundRebooking = () => {
                               origin: t.origin,
                               destination: t.destination,
                               rebook_dates: t.rebook_dates ?? [],
+                              cancellation_fee: t.cancellation_fee,
+                              fee_rate: t.fee_rate,
+                              trip_departed: t.trip_departed,
                             })
                           }
                           style={[styles.actionBtn, { borderColor: theme.tint }]}
@@ -331,6 +350,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 14,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width and starves whatever shares the
+    // row with it. Views get min-width:0 from react-native-web; inputs ask.
+    minWidth: 0,
   },
   searchBtn: {
     width: 46,

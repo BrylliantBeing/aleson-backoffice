@@ -12,13 +12,16 @@ import {
 } from "react-native";
 
 /**
- * Compact typed date entry in MM-DD-YY form (fast keyboard entry, no calendar
+ * Compact typed date entry in MM-DD-YYYY form (fast keyboard entry, no calendar
  * popover). Emits an ISO `YYYY-MM-DD` string via onChange, or "" while
  * incomplete/invalid.
  *
- * The 2-digit year is expanded per `mode`:
- *   - "future" (travel dates): 20YY
- *   - "past"   (birthdates):   20YY, or 19YY if 20YY would be in the future
+ * The year is typed in full. It used to be two digits, expanded to 19YY/20YY by
+ * comparing against today — which silently guessed the century and could not
+ * express a date the guess got wrong. A birthdate is checked against the
+ * government ID at the gate, so the clerk has to be able to enter 1998 and see
+ * 1998. `mode` no longer picks a century; it only bounds a plausible year, so a
+ * slipped digit ("0198") reads as incomplete rather than as a real date.
  */
 interface DateFieldProps {
   value?: string; // ISO YYYY-MM-DD (optional — enables external reset sync)
@@ -41,30 +44,30 @@ const isoToDisplay = (iso?: string): string => {
   if (!iso) return "";
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m) return "";
-  return `${m[2]}-${m[3]}-${m[1].slice(2)}`;
+  return `${m[2]}-${m[3]}-${m[1]}`;
 };
 
-// digits (up to 6) -> "MM-DD-YY" progressively
+// digits (up to 8) -> "MM-DD-YYYY" progressively
 const formatDigits = (digits: string): string => {
-  const d = digits.slice(0, 6);
+  const d = digits.slice(0, 8);
   if (d.length <= 2) return d;
   if (d.length <= 4) return `${d.slice(0, 2)}-${d.slice(2)}`;
   return `${d.slice(0, 2)}-${d.slice(2, 4)}-${d.slice(4)}`;
 };
 
+/** Widest year a typed date may carry, so a transposed digit is caught here. */
+const MIN_YEAR = 1900;
+const maxYear = (mode: "future" | "past") =>
+  new Date().getFullYear() + (mode === "future" ? 10 : 0);
+
 const displayToIso = (display: string, mode: "future" | "past"): string => {
   const digits = display.replace(/\D/g, "");
-  if (digits.length !== 6) return "";
+  if (digits.length !== 8) return "";
   const mm = parseInt(digits.slice(0, 2), 10);
   const dd = parseInt(digits.slice(2, 4), 10);
-  const yy = parseInt(digits.slice(4, 6), 10);
+  const year = parseInt(digits.slice(4, 8), 10);
   if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return "";
-
-  let year = 2000 + yy;
-  if (mode === "past") {
-    const candidate = new Date(year, mm - 1, dd);
-    if (candidate.getTime() > Date.now()) year = 1900 + yy;
-  }
+  if (year < MIN_YEAR || year > maxYear(mode)) return "";
   // Reject impossible calendar dates (e.g. 02-31).
   const dt = new Date(year, mm - 1, dd);
   if (dt.getMonth() !== mm - 1 || dt.getDate() !== dd) return "";
@@ -76,7 +79,7 @@ const DateField = React.forwardRef<TextInput, DateFieldProps>(({
   onChange,
   mode = "future",
   label,
-  placeholder = "MM-DD-YY",
+  placeholder = "MM-DD-YYYY",
   inputStyle,
   style,
   error,
@@ -113,7 +116,7 @@ const DateField = React.forwardRef<TextInput, DateFieldProps>(({
         placeholder={placeholder}
         placeholderTextColor={theme.greyText}
         keyboardType="number-pad"
-        maxLength={8}
+        maxLength={10}
         onSubmitEditing={onSubmitEditing}
         returnKeyType={returnKeyType}
         blurOnSubmit={blurOnSubmit}

@@ -151,6 +151,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 17,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width and starves whatever shares the
+    // row with it. Views get min-width:0 from react-native-web; inputs ask.
+    minWidth: 0,
   },
   passwordRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   eyeBtn: { padding: 10 },

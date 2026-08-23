@@ -99,6 +99,40 @@ export function validateName(raw: string, label: string): string | null {
   return null;
 }
 
+/**
+ * Contact number rules for the counter, mirroring `helper/validation.ts` on the
+ * public booking site so the same number is accepted at both. Routes are PH ↔ MY,
+ * so either country's mobile format is valid, plus a generic international form.
+ *
+ * The counter needs a number it can actually ring when a sailing is pulled, and
+ * `keyboardType="phone-pad"` is a soft hint the web build does not enforce — so
+ * without this check the field takes "09678837asfbas" happily.
+ */
+const PH_MOBILE_RE = /^(?:\+?63|0)9\d{9}$/;
+const PH_LANDLINE_RE = /^(?:\+?63|0)[2-8]\d{7,9}$/;
+const MY_MOBILE_RE = /^(?:\+?60|0)1\d{8,9}$/;
+const INTERNATIONAL_RE = /^\+\d{8,15}$/;
+
+/** Strips spaces, dashes, dots and brackets — what people actually type. */
+export const normalisePhone = (raw: string): string => raw.replace(/[\s\-().]/g, "");
+
+/**
+ * Returns an error string, or null when the number looks usable. Pass
+ * `required: false` where the number is optional — the counter takes a phone OR
+ * an email, so a blank field is only an error when nothing else identifies them.
+ */
+export function validatePhone(raw: string, required = true): string | null {
+  const value = normalisePhone(raw);
+  if (!value) return required ? "Contact number is required." : null;
+  if (!/^\+?\d+$/.test(value)) {
+    return "Contact number can only contain digits, spaces and an optional “+”.";
+  }
+  if (PH_MOBILE_RE.test(value) || PH_LANDLINE_RE.test(value)) return null;
+  if (MY_MOBILE_RE.test(value)) return null;
+  if (INTERNATIONAL_RE.test(value)) return null;
+  return "Enter a valid contact number, e.g. 0917 123 4567 or +63 917 123 4567.";
+}
+
 // Money formatting moved to utils/currency.ts when fares gained a currency —
 // an amount can no longer be rendered without knowing which one it is in.
 export { money, moneyWhole } from "./currency";

@@ -22,6 +22,15 @@ export interface RefundableTicket {
   /** Fare less the cancellation fee — the most this ticket can be refunded for. */
   max_refund: number;
   cancellation_fee: number;
+  /**
+   * The rate behind cancellation_fee, as a fraction: 0.10 while the sailing is
+   * still to leave, 0.40 once it has departed. Sent by the backend rather than
+   * hard-coded here so the counter can never quote a rate the API would not
+   * charge.
+   */
+  fee_rate: number;
+  /** Which side of departure this ticket sits on, and so which rate applies. */
+  trip_departed: boolean;
   /** How the booking was paid: 'cash' | 'card' | 'qr' | 'gcash' | 'grabpay' | null. */
   payment_method: string | null;
   /**
@@ -135,9 +144,16 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
               <Text style={{ color: theme.text, fontSize: 13 }}>{money(ticket.price, ticket.currency)}</Text>
             </View>
             <View style={styles.breakdownRow}>
-              <Text style={{ color: theme.greyText, fontSize: 13 }}>Cancellation fee (20%)</Text>
+              <Text style={{ color: theme.greyText, fontSize: 13 }}>
+                Cancellation fee ({Math.round(ticket.fee_rate * 100)}%)
+              </Text>
               <Text style={{ color: "#e5484d", fontSize: 13 }}>−{money(ticket.cancellation_fee, ticket.currency)}</Text>
             </View>
+            <Text style={{ color: theme.greyText, fontSize: 11.5, lineHeight: 16 }}>
+              {ticket.trip_departed
+                ? "This sailing has already departed, so the higher rate applies."
+                : "This sailing has not departed yet."}
+            </Text>
             <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 6 }]}>
               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>Refundable</Text>
               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{money(ticket.max_refund, ticket.currency)}</Text>
@@ -226,6 +242,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 14,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width and starves whatever shares the
+    // row with it. Views get min-width:0 from react-native-web; inputs ask.
+    minWidth: 0,
   },
   errorText: { color: "#e5484d", fontSize: 12, marginTop: 6 },
   breakdown: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 14, gap: 6 },

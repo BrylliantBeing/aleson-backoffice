@@ -45,6 +45,16 @@ export interface RebookableTicket {
    * that day. The route is fixed to the ticket's own, so neither is pickable.
    */
   rebook_dates: string[];
+  /**
+   * The rebooking charge on this ticket. A rebooking is priced exactly like a
+   * refund — the same share of the fare paid, off the same departure — so the
+   * backend sends one figure that both modals quote. 0.10 of the fare while
+   * the sailing is still to leave, 0.40 once it has gone.
+   */
+  cancellation_fee: number;
+  fee_rate: number;
+  /** Which side of departure this ticket sits on, and so which rate applies. */
+  trip_departed: boolean;
 }
 
 interface RebookModalProps {
@@ -134,11 +144,19 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
   const delta = newFare != null && ticket ? Math.round((newFare - ticket.price) * 100) / 100 : null;
   const owesMore = (delta ?? 0) > 0.01;
 
-  const tenderedNum = parseFloat(tendered) || 0;
-  const change = method === "cash" && owesMore ? tenderedNum - (delta ?? 0) : null;
-  const quickTenders = owesMore ? quickCashOptions(delta ?? 0) : [];
+  // A rebooking is never free: the fee is owed whichever sailing is picked.
+  // A *cheaper* new sailing is not netted off it — the backend leaves that
+  // credit to a separate partial refund on the new ticket — so only a genuine
+  // upgrade adds to what the counter collects today.
+  const rebookFee = ticket?.cancellation_fee ?? 0;
+  const amountDue = Math.round((Math.max(delta ?? 0, 0) + rebookFee) * 100) / 100;
+  const owesPayment = amountDue > 0.01;
 
-  const paymentOk = !owesMore || (method === "cash" ? tenderedNum >= (delta ?? 0) : method === "card");
+  const tenderedNum = parseFloat(tendered) || 0;
+  const change = method === "cash" && owesPayment ? tenderedNum - amountDue : null;
+  const quickTenders = owesPayment ? quickCashOptions(amountDue) : [];
+
+  const paymentOk = !owesPayment || (method === "cash" ? tenderedNum >= amountDue : method === "card");
 
   const canConfirm = !!ticket && !!voyageId && !!selectedClass && !!seat && paymentOk && !submitting;
 
@@ -156,7 +174,7 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
             accommodation_class: selectedClass,
             seat_number: seat,
           },
-          payment: owesMore ? { method, tendered: method === "cash" ? tenderedNum : undefined } : null,
+          payment: owesPayment ? { method, tendered: method === "cash" ? tenderedNum : undefined } : null,
         }),
       });
       if (!res.ok) {
@@ -256,15 +274,32 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
                   New fare {money(newFare, ticket.currency)} vs. current{" "}
                   {money(ticket.price, ticket.currency)}
                 </Text>
-                <Text style={{ color: owesMore ? "#e5484d" : "#2e9e5b", fontSize: 15, fontWeight: "800" }}>
-                  {owesMore
-                    ? `Additional payment due: ${money(delta, ticket.currency)}`
-                    : "No additional payment due"}
+                <Text style={{ color: theme.greyText, fontSize: 12 }}>
+                  Rebooking fee ({Math.round(ticket.fee_rate * 100)}%){" "}
+                  {money(rebookFee, ticket.currency)}
+                  {owesMore ? ` + ${money(delta, ticket.currency)} fare difference` : ""}
                 </Text>
+                <Text style={{ color: owesPayment ? "#e5484d" : "#2e9e5b", fontSize: 15, fontWeight: "800" }}>
+                  {owesPayment
+                    ? `Payment due: ${money(amountDue, ticket.currency)}`
+                    : "No payment due"}
+                </Text>
+                <Text style={{ color: theme.greyText, fontSize: 11.5, lineHeight: 16 }}>
+                  {ticket.trip_departed
+                    ? "This sailing has already departed, so the higher rate applies."
+                    : "This sailing has not departed yet."}
+                </Text>
+                {delta != null && delta < -0.01 && (
+                  <Text style={{ color: theme.greyText, fontSize: 11.5, lineHeight: 16 }}>
+                    The cheaper fare is not deducted here — refund the{" "}
+                    {money(Math.abs(delta), ticket.currency)} difference on the new ticket
+                    once this rebooking is done.
+                  </Text>
+                )}
               </View>
             )}
 
-            {owesMore && (
+            {owesPayment && (
               <View style={{ gap: 8 }}>
                 <View style={styles.pillRow}>
                   {(["cash", "card"] as const).map((m) => {
@@ -388,6 +423,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 14,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width and starves whatever shares the
+    // row with it. Views get min-width:0 from react-native-web; inputs ask.
+    minWidth: 0,
   },
   fareBox: { borderWidth: 1, borderRadius: 10, padding: 10, gap: 4 },
   policyBox: { borderWidth: 1, borderRadius: 10, padding: 10, gap: 4 },

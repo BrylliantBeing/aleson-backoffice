@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 10,
   },
-  search: { flex: 1, paddingVertical: 8, fontSize: 14, fontFamily: "Lato", outlineStyle: "none" } as any,
+  search: { flex: 1, minWidth: 0, paddingVertical: 8, fontSize: 14, fontFamily: "Lato", outlineStyle: "none" } as any,
   list: { maxHeight: 320 },
   row: {
     flexDirection: "row",

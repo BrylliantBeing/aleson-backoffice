@@ -324,6 +324,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 13,
     fontFamily: "Lato",
+    // On web a bare <input> keeps `min-width: auto`, so it refuses to shrink
+    // below its ~20-character intrinsic width and starves whatever shares the
+    // row with it. Views get min-width:0 from react-native-web; inputs ask.
+    minWidth: 0,
   },
   inline: { flexDirection: "row", alignItems: "center", gap: 8 },
   rowBetween: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4 },
