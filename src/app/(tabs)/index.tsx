@@ -1353,7 +1353,10 @@ const BookingOffice = () => {
                   { zIndex: 3 },
                 ]}
               >
-                <View style={{ flex: 1, zIndex: 2 }}>
+                {/* Origin outranks Destination. With equal z-index the later
+                    sibling wins, so the open Origin list rendered behind the
+                    Destination field wherever the two columns stack. */}
+                <View style={{ flex: 1, zIndex: 3 }}>
                   <CustomSelectList
                     data={origins.map((o, i) => ({ key: String(i), value: o }))}
                     onSelect={(o) => {
