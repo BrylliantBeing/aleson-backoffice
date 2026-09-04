@@ -59,16 +59,19 @@ jobs:
 
       # EXPO_PUBLIC_* is inlined by Metro at BUILD time, so the API base URL is
       # baked into this image and cannot be changed by a k8s env var later.
-      # src/utils/api.ts expects the HOST ONLY (no /api/v1 suffix — request
-      # paths already carry it), unlike the booking site whose value bakes the
-      # prefix in. Override via an EXPO_PUBLIC_API_BASE_URL repository variable
-      # (Settings → Secrets and variables → Actions → Variables).
+      # That is exactly why it is left EMPTY: the bundle then calls a relative
+      # /api/v1/... and the image's own nginx proxies it to the api Service, so
+      # one image serves the LAN and the Cloudflare tunnel alike. Set an
+      # EXPO_PUBLIC_API_BASE_URL repository variable (Settings → Secrets and
+      # variables → Actions → Variables) only for a deployment with no proxy in
+      # front, and give it the HOST ONLY (no /api/v1 suffix — request paths
+      # already carry it), unlike the booking site whose value bakes it in.
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           build-args: |
-            EXPO_PUBLIC_API_BASE_URL=${{ vars.EXPO_PUBLIC_API_BASE_URL || 'https://aleson-shipping.com' }}
+            EXPO_PUBLIC_API_BASE_URL=${{ vars.EXPO_PUBLIC_API_BASE_URL }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
