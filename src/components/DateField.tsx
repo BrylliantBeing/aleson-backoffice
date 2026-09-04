@@ -16,12 +16,14 @@ import {
  * popover). Emits an ISO `YYYY-MM-DD` string via onChange, or "" while
  * incomplete/invalid.
  *
- * The year is typed in full. It used to be two digits, expanded to 19YY/20YY by
- * comparing against today — which silently guessed the century and could not
- * express a date the guess got wrong. A birthdate is checked against the
- * government ID at the gate, so the clerk has to be able to enter 1998 and see
- * 1998. `mode` no longer picks a century; it only bounds a plausible year, so a
- * slipped digit ("0198") reads as incomplete rather than as a real date.
+ * The year takes two digits or four. Four is unambiguous; two is what a clerk
+ * at a busy counter actually types, so a 6-digit entry picks the century that
+ * makes the date possible for `mode` ("09-04-98" is a 1998 birthdate, because
+ * nobody was born in 2098) and then rewrites itself in full on blur. That last
+ * step is the point: the century is a guess, and a guess the clerk cannot see is
+ * one they cannot correct against the government ID in their hand. `mode` also
+ * bounds a plausible year, so a slipped digit ("0198") reads as incomplete
+ * rather than as a real date.
  */
 interface DateFieldProps {
   value?: string; // ISO YYYY-MM-DD (optional — enables external reset sync)
@@ -60,13 +62,44 @@ const MIN_YEAR = 1900;
 const maxYear = (mode: "future" | "past") =>
   new Date().getFullYear() + (mode === "future" ? 10 : 0);
 
+/** Midnight today, so "is this in the future" ignores the time of day. */
+const startOfToday = () => {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+};
+
+/**
+ * Century for a 2-digit year: 20YY or 19YY, whichever lands the date on the
+ * side of today that `mode` allows. A birthdate can't be in the future, so
+ * "12-31-27" keyed in 2026 is 1927 rather than next year.
+ */
+const expandYear = (
+  yy: number,
+  mm: number,
+  dd: number,
+  mode: "future" | "past"
+): number => {
+  const limit = maxYear(mode);
+  const candidates = [2000 + yy, 1900 + yy].filter(
+    (y) => y >= MIN_YEAR && y <= limit
+  );
+  const fits = (y: number) => {
+    const dt = new Date(y, mm - 1, dd);
+    return mode === "past" ? dt <= startOfToday() : dt >= startOfToday();
+  };
+  return candidates.find(fits) ?? candidates[0] ?? 2000 + yy;
+};
+
 const displayToIso = (display: string, mode: "future" | "past"): string => {
   const digits = display.replace(/\D/g, "");
-  if (digits.length !== 8) return "";
+  if (digits.length !== 6 && digits.length !== 8) return "";
   const mm = parseInt(digits.slice(0, 2), 10);
   const dd = parseInt(digits.slice(2, 4), 10);
-  const year = parseInt(digits.slice(4, 8), 10);
   if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return "";
+  const year =
+    digits.length === 8
+      ? parseInt(digits.slice(4, 8), 10)
+      : expandYear(parseInt(digits.slice(4, 6), 10), mm, dd, mode);
   if (year < MIN_YEAR || year > maxYear(mode)) return "";
   // Reject impossible calendar dates (e.g. 02-31).
   const dt = new Date(year, mm - 1, dd);
@@ -106,6 +139,13 @@ const DateField = React.forwardRef<TextInput, DateFieldProps>(({
     onChange(displayToIso(formatted, mode));
   };
 
+  // Rewrite a 2-digit year in full once the clerk leaves the field, so the
+  // century this component guessed is on screen to be checked against the ID.
+  const handleBlur = () => {
+    const iso = displayToIso(text, mode);
+    if (iso) setText(isoToDisplay(iso));
+  };
+
   return (
     <View style={style}>
       {label ? <Text style={[styles.label, { color: theme.greyText }]}>{label}</Text> : null}
@@ -113,6 +153,7 @@ const DateField = React.forwardRef<TextInput, DateFieldProps>(({
         ref={ref}
         value={text}
         onChangeText={handleChange}
+        onBlur={handleBlur}
         placeholder={placeholder}
         placeholderTextColor={theme.greyText}
         keyboardType="number-pad"
