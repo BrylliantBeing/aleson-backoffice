@@ -181,7 +181,33 @@ MAX_JOB_BYTES = 512 * 1024
 
 
 @app.post("/print")
-def print_raw(req: PrintRequest):
+def print_raw(req: PrintRequest, request: Request):
+    # CORS alone does not protect this endpoint. It governs whether a page may
+    # READ the response, not whether the request is SENT -- a cross-origin POST
+    # that qualifies as a "simple request" reaches the handler and prints,
+    # whatever the browser then does with the reply. Any page open on the
+    # counter PC could therefore drive the printer through loopback and burn
+    # accountable, pre-numbered ticket stock.
+    #
+    # Requiring application/json is what closes it: that content type is not
+    # simple, so the browser must preflight, and the preflight is where the
+    # origin allowlist above actually gets to say no. The back office already
+    # sends this header (fetch with a JSON body does so automatically), so this
+    # costs the real client nothing.
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(
+            status_code=415,
+            detail="Content-Type must be application/json.",
+        )
+    # Defence in depth behind the preflight: a request that carries an Origin at
+    # all came from a browser, and if it did, that origin must be one we allow.
+    # Requests with no Origin are the agent's own local tooling (curl, the
+    # /healthz probe), which no web page can forge an omission for.
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        raise HTTPException(status_code=403, detail=f"Origin {origin} is not allowed to print.")
+
     try:
         payload = base64.b64decode(req.data_base64, validate=True)
     except Exception:
