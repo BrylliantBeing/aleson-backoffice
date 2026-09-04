@@ -1,4 +1,5 @@
 import { Voyage } from "@/types/voyage";
+import { seatNumberLabel } from "@/utils/seatLabel";
 import { FontAwesome } from "@expo/vector-icons";
 import React from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
@@ -107,7 +108,7 @@ export default function VoyageLegPicker({
           <View style={{ flex: 1 }}>
             <Text style={{ color: theme.greyText, fontSize: 11 }}>Seats</Text>
             <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }} numberOfLines={1}>
-              {seats.length ? seats.join(", ") : "—"}
+              {seats.length ? seats.map(seatNumberLabel).join(", ") : "—"}
             </Text>
           </View>
           <Pressable onPress={onEditSeats} style={[styles.editSeatsBtn, { borderColor: theme.tint }]}>

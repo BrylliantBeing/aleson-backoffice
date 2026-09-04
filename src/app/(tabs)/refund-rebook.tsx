@@ -5,6 +5,7 @@ import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import { seatNumberLabel } from "@/utils/seatLabel";
 import { FontAwesome } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import React, { useEffect, useState } from "react";
@@ -228,7 +229,7 @@ const RefundRebooking = () => {
                       {t.origin} → {t.destination} · {formatDeparture(t.scheduled_departure)}
                     </Text>
                     <Text style={{ color: theme.greyText, fontSize: 12 }}>
-                      {t.accommodation_class} · Seat {t.seat_number} · {money(t.price, t.currency)}
+                      {t.accommodation_class} · Seat {seatNumberLabel(t.seat_number)} · {money(t.price, t.currency)}
                     </Text>
                     {t.ticket_number && (
                       <Text style={{ color: theme.greyText, fontSize: 12 }}>

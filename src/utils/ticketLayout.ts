@@ -10,6 +10,7 @@
  */
 
 import { ageOn } from "@/utils/passengerRules";
+import { seatNumberLabel } from "@/utils/seatLabel";
 
 /** One printed passage ticket. Values are already formatted for the paper. */
 export interface TicketData {
@@ -267,7 +268,8 @@ export function buildTicketData(
     age: pax.birthdate ? String(ageOn(pax.birthdate, issued)) : "",
     sex: (pax.sex || "").trim().charAt(0).toUpperCase(),
     accommodation: (leg.accommodation || "").toUpperCase(),
-    seat: (pax.seat || "").toUpperCase(),
+    // Printed as the number painted on the ship, not the prefixed stored name.
+    seat: seatNumberLabel(pax.seat || "").toUpperCase(),
     departureDate: formatDepartureDate(leg.departDateISO),
     departureTime: formatDepartureTime(leg.departTime),
     dateIssued: MONTHS_DD(issued),

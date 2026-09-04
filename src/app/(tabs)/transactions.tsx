@@ -5,6 +5,7 @@ import Colors from "@/constants/Colors";
 import { useAuth } from "@/context/AuthContext";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import { seatNumberLabel } from "@/utils/seatLabel";
 import { FontAwesome } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -464,7 +465,7 @@ const Transactions = () => {
                                 {tk.passenger_name} · {tk.passenger_type}
                               </Text>
                               <Text style={{ color: theme.greyText, fontSize: 12 }}>
-                                {tk.accommodation_class} · Seat {tk.seat_number} ·{" "}
+                                {tk.accommodation_class} · Seat {seatNumberLabel(tk.seat_number)} ·{" "}
                                 {money(tk.price, tk.currency)}
                               </Text>
                               <Text style={{ color: theme.greyText, fontSize: 12 }}>

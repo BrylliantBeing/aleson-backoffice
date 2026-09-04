@@ -26,7 +26,7 @@ import {
   validatePhone,
 } from "@/utils/passengerRules";
 import { DEFAULT_CURRENCY, money, moneyWhole } from "@/utils/currency";
-import { autoAssignSeats } from "@/utils/seatAssign";
+import { autoAssignSeats, seatLabels } from "@/utils/seatAssign";
 import { makeScheduleChecker, RouteVoyage } from "@/utils/schedule";
 import { quickCashOptions } from "@/utils/payment";
 import {
@@ -519,6 +519,11 @@ const BookingOffice = () => {
     (tripType === "one-way" || (seatPax <= retAvail && retSeats.length === seatPax));
   const revealed = depReady && retReady;
 
+  // Printed seat labels for the two legs, so the agent reads the same numbers
+  // the operator's seat chart shows rather than the stored (prefixed) name.
+  const depSeatLabels = useMemo(() => seatLabels(depVoyage?.seat_map), [depVoyage]);
+  const retSeatLabels = useMemo(() => seatLabels(retVoyage?.seat_map), [retVoyage]);
+
   // Seat for a given passenger (aligned to seat-occupying order).
   const seatByPassenger = useMemo(() => {
     const map: Record<string, { dep: string | null; ret: string | null }> = {};
@@ -557,11 +562,16 @@ const BookingOffice = () => {
     setPassengers((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
 
   // Enter/next focus chain across passenger-detail inputs. Each row contributes
-  // 5 typed fields in visual order — first, MI, last, birthdate, ID number
-  // (the sex toggle and the nationality dropdown aren't typed, so they're
-  // skipped) — and the last field rolls over into the next passenger's first
-  // name.
-  const PAX_FIELDS = 5;
+  // 6 typed fields in visual order — first, MI, last, birthdate, ID type, ID
+  // number (the sex toggle and the nationality dropdown aren't typed, so
+  // they're skipped) — and the last field rolls over into the next passenger's
+  // first name.
+  const PAX_FIELDS = 6;
+  // Row whose ID-type suggestions are showing. Each row sets its own stacking
+  // order, so the list can only spill out of one if that row is lifted above
+  // its neighbours — and which neighbours it has to clear depends on whether
+  // the list opened downward or (on the last row of the scroller) upward.
+  const [idTypeOpenRow, setIdTypeOpenRow] = useState<string | null>(null);
   const paxInputRefs = useRef<Record<number, TextInput | null>>({});
   const focusPaxField = (flatIndex: number) =>
     paxInputRefs.current[flatIndex + 1]?.focus();
@@ -763,6 +773,7 @@ const BookingOffice = () => {
         from: origin,
         to: destination,
         seats: depSeats,
+        labels: depSeatLabels,
       },
       ...(tripType === "round-trip"
         ? [
@@ -773,6 +784,7 @@ const BookingOffice = () => {
               from: destination,
               to: origin,
               seats: retSeats,
+              labels: retSeatLabels,
             },
           ]
         : []),
@@ -784,9 +796,12 @@ const BookingOffice = () => {
       // the same walk buildBooking does, so a lap infant does not consume one.
       let si = 0;
       for (const p of passengers) {
-        const seat = CATEGORY_META[p.category].seatOccupying
+        // The ticket prints the number painted on the seat, not the stored
+        // (class-prefixed) name the manifest is keyed by.
+        const seatName = CATEGORY_META[p.category].seatOccupying
           ? leg.seats[si++] ?? null
           : null;
+        const seat = seatName ? leg.labels[seatName] ?? seatName : null;
         out.push(
           buildTicketData(
             {
@@ -1076,7 +1091,16 @@ const BookingOffice = () => {
         style={[
           styles.paxRow,
           paxTier !== "row" && styles.paxRowWrap,
-          { borderLeftColor: meta.color, backgroundColor: meta.color + "0d" },
+          {
+            borderLeftColor: meta.color,
+            backgroundColor: meta.color + "0d",
+            // Descending by row order, so the ID-type suggestions dropping out
+            // of one row float over the rows below instead of being buried by
+            // them — equal z-indexes hand it to whichever paints last. The open
+            // row clears every other row, either way its list opened.
+            zIndex:
+              idTypeOpenRow === p.id ? passengers.length + 1 : passengers.length - i,
+          },
         ]}
       >
         <View style={[styles.cCat, paxCell?.cat]}>
@@ -1085,7 +1109,11 @@ const BookingOffice = () => {
           </Text>
           <Text style={{ color: theme.greyText, fontSize: 10 }} numberOfLines={1}>
             {meta.seatOccupying
-              ? `Seat ${seat?.dep ?? "—"}${tripType === "round-trip" ? ` / ${seat?.ret ?? "—"}` : ""}`
+              ? `Seat ${(seat?.dep && depSeatLabels[seat.dep]) ?? seat?.dep ?? "—"}${
+                  tripType === "round-trip"
+                    ? ` / ${(seat?.ret && retSeatLabels[seat.ret]) ?? seat?.ret ?? "—"}`
+                    : ""
+                }`
               : "Lap"}
           </Text>
         </View>
@@ -1181,25 +1209,39 @@ const BookingOffice = () => {
           style={[styles.cNat, paxCell?.nat].filter(Boolean) as ViewStyle[]}
         />
         <IdTypeField
-          value={p.id_type}
-          onChange={(v) => updatePassenger(p.id, { id_type: v })}
-          placeholder={p.category === "infant" ? "ID type (optional)" : "ID type"}
-          style={[styles.cIdType, paxCell?.idType].filter(Boolean) as ViewStyle[]}
-        />
-        <TextInput
           ref={(el) => {
             paxInputRefs.current[i * PAX_FIELDS + 4] = el;
           }}
+          value={p.id_type}
+          onChange={(v) => updatePassenger(p.id, { id_type: v })}
+          placeholder={p.category === "infant" ? "ID type (optional)" : "ID type"}
+          onOpenChange={(isOpen) =>
+            setIdTypeOpenRow((cur) => (isOpen ? p.id : cur === p.id ? null : cur))
+          }
+          style={[styles.cIdType, paxCell?.idType].filter(Boolean) as ViewStyle[]}
+          inputStyle={styles.cInput}
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
+        />
+        <TextInput
+          ref={(el) => {
+            paxInputRefs.current[i * PAX_FIELDS + 5] = el;
+          }}
           style={[inputStyle, styles.cId, paxCell?.id]}
           value={p.id_number}
-          onChangeText={(v) => updatePassenger(p.id, { id_number: v })}
+          // Document numbers are printed on the ticket and read back at the
+          // gate, so they go on the manifest upper-case however they were
+          // keyed. `autoCapitalize` is only a soft keyboard hint and does
+          // nothing to a typed or scanned entry on the web build.
+          onChangeText={(v) => updatePassenger(p.id, { id_number: v.toUpperCase() })}
           placeholder={p.category === "infant" ? "Optional" : "ID / Passport"}
           placeholderTextColor={theme.greyText}
           autoCapitalize="characters"
           autoCorrect={false}
           returnKeyType={i === passengers.length - 1 ? "done" : "next"}
           blurOnSubmit={i === passengers.length - 1}
-          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 4)}
+          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 5)}
         />
         {isRoomBooking && (
           <Pressable

@@ -6,8 +6,14 @@
 // occupied seats. Always terminates with a valid set. The agent can override the
 // result in SeatAssignModal.
 
+import { seatLabel } from "@/utils/seatLabel";
+
 export interface Seat {
   name: string;
+  // What the seat is painted with on the ship. Numbers repeat across classes on
+  // some vessels, so `name` keeps a class prefix (it is what a ticket stores and
+  // must stay unique per vessel) and `label` is what an agent reads off the map.
+  label?: string;
   x: number;
   y: number;
   class_code: string;
@@ -19,6 +25,16 @@ export interface Deck {
 export interface SeatMap {
   decks: Deck[];
 }
+
+// Seat name -> the label painted on the ship (falls back to the name). Tickets
+// store the unique `name`; agents compare against the operator's numbered chart.
+export const seatLabels = (map: SeatMap | null | undefined): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const deck of map?.decks ?? []) {
+    for (const seat of deck.seats) out[seat.name] = seatLabel(seat);
+  }
+  return out;
+};
 
 // Accommodation class display name (fares API) → seat_map class_code.
 export const NAME_TO_CODE: Record<string, string> = {

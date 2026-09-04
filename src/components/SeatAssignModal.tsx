@@ -1,5 +1,6 @@
 import Colors from "@/constants/Colors";
 import { NAME_TO_CODE, Seat, SeatMap } from "@/utils/seatAssign";
+import { seatLabel } from "@/utils/seatLabel";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
@@ -150,7 +151,7 @@ const SeatAssignModal: React.FC<SeatAssignModalProps> = ({
                           ]}
                           numberOfLines={1}
                         >
-                          {seat.name}
+                          {seatLabel(seat)}
                         </Text>
                       </Pressable>
                     );
