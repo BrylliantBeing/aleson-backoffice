@@ -39,7 +39,7 @@ export default function TabsLayout() {
           backgroundColor: theme.cardBackground,
           borderTopColor: theme.greyText + "33",
         },
-        // Four labels have to share a phone's width — "Refund & Rebooking" is
+        // Five labels have to share a phone's width — "Refund & Rebooking" is
         // the one that decides how small they need to get.
         tabBarLabelStyle: {
           fontFamily: "Lato",
@@ -91,6 +91,17 @@ export default function TabsLayout() {
           title: "Till",
           tabBarIcon: ({ color, size }) => (
             <FontAwesome name="money" size={size} color={color} />
+          ),
+        }}
+      />
+      {/* Sits after Till because that is the order of the work: count the
+          drawer, then print the report that accounts for it. */}
+      <Tabs.Screen
+        name="reports"
+        options={{
+          title: "Reports",
+          tabBarIcon: ({ color, size }) => (
+            <FontAwesome name="file-text-o" size={size} color={color} />
           ),
         }}
       />

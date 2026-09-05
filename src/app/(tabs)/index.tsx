@@ -235,30 +235,11 @@ const BookingOffice = () => {
     loadPrinterSettings().then(setPrinterSettings);
   }, []);
 
-  // ── Ticket number (printed on the passage ticket) ─────────────────────────
-  // Assigned by the server from the agent account's assigned station (set by an
-  // admin) when the tickets are created. Shown here only as a preview of what
-  // this counter will issue next; an admin corrects a station's sequence through
-  // PUT /api/v1/office/ticket-number, not from the selling screen.
+  // The counter this cashier sells at, set by an admin on the account. It picks
+  // the serial series their sales are numbered in, but the number itself is
+  // taken by the server as each ticket is written — there is nothing here for
+  // the cashier to see or set, and a serial they could edit would not be one.
   const ticketStation = agent?.ticket_station ?? null;
-  const [ticketNumber, setTicketNumber] = useState("");
-
-  const fetchNextTicketNumber = async () => {
-    try {
-      const res = await apiFetch("/api/v1/office/ticket-number");
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data?.ticket_number) setTicketNumber(data.ticket_number);
-    } catch {
-      /* best-effort — cashier can still type the number in manually */
-    }
-  };
-
-  // Prefill the station's next number once the agent (and its station) is known.
-  useEffect(() => {
-    if (ticketStation) fetchNextTicketNumber();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketStation]);
 
   const seatPax = SEAT_OCCUPYING.reduce((s, k) => s + (counts[k] || 0), 0);
   const totalPax = CATEGORIES.reduce((s, c) => s + (counts[c.key] || 0), 0);
@@ -589,22 +570,15 @@ const BookingOffice = () => {
         p.nationality.trim() &&
         !dobErrors[i]
     );
-  // Optional here: the counter takes a phone OR an email. Only a number that
-  // was actually typed has to be a real one.
+  // Neither a phone nor an email is required at the counter. A walk-up
+  // passenger often has neither to give, and they leave holding the printed
+  // ticket rather than waiting on a confirmation email. Only a number that was
+  // actually typed has to be a real one.
   const phoneError = validatePhone(phone, false);
-  const contactComplete =
-    !!contactLast.trim() && (!!email.trim() || !!phone.trim()) && !phoneError;
   const tenderedNum = parseFloat(tendered) || 0;
   const cashOk = method !== "cash" || tenderedNum >= total;
   const change = method === "cash" ? tenderedNum - total : null;
   const quickTenders = quickCashOptions(total);
-
-  // No station on the account means this cashier cannot issue numbered tickets
-  // at all — an admin has to assign one before they can sell.
-  const ticketNumberOk = !!ticketStation;
-  // The field sits at the top of the passenger panel, well away from the Confirm
-  // button, so flag it in place once the sale is far enough along to need it.
-  const ticketNumberMissing = revealed && !ticketNumberOk;
 
   // Every reason this sale cannot go through, phrased as the fix and ordered the
   // way the cashier works down the screen. Confirm stays pressable while these
@@ -631,12 +605,13 @@ const BookingOffice = () => {
   };
 
   const confirmBlockers: string[] = [];
+  // The station is printed on the ticket and identifies the counter on the
+  // end-of-day report, so a sale still needs one — it just no longer has
+  // anything to do with the ticket's number.
   if (!ticketStation) {
     confirmBlockers.push(
       "This account has no ticket counter assigned — an admin has to set one before you can sell."
     );
-  } else if (!ticketNumber.trim()) {
-    confirmBlockers.push("Enter the ticket number printed on the passage ticket.");
   }
   if (!depReady) confirmBlockers.push("Choose the departure voyage and class.");
   if (!retReady) confirmBlockers.push("Choose the return voyage and class.");
@@ -662,9 +637,6 @@ const BookingOffice = () => {
     });
   }
   if (!contactLast.trim()) confirmBlockers.push("Enter the contact person's last name.");
-  if (!email.trim() && !phone.trim()) {
-    confirmBlockers.push("Enter a contact phone number or email.");
-  }
   if (phoneError) confirmBlockers.push(`Contact phone: ${phoneError}`);
   if (!method) {
     confirmBlockers.push("Choose a payment method.");
@@ -955,8 +927,6 @@ const BookingOffice = () => {
     setTendered("");
     setErrorMsg(null);
     setQr(null);
-    setTicketNumber("");
-    if (ticketStation) fetchNextTicketNumber();
   };
 
   // Clear the counter for the next sale, then announce the completed one. The
@@ -1515,44 +1485,20 @@ const BookingOffice = () => {
             >
               <Text style={[styles.panelTitle, { color: theme.text }]}>Passenger Details</Text>
 
-              {/* Printed ticket stock — kept at the top of the panel so the cashier
-                  can see and correct it without scrolling down to payment, and so it
-                  stays reachable while a QR payment is pending. */}
-              <View style={{ gap: 4 }}>
-                <View
-                  style={[
-                    styles.ticketStrip,
-                    {
-                      borderColor: ticketNumberMissing ? "#e5484d" : theme.border,
-                      backgroundColor: theme.tint + "0d",
-                    },
-                  ]}
-                >
-                  <Text style={[styles.ticketStripLabel, { color: theme.greyText }]}>Next ticket no.</Text>
-                  {/* Read-only: the serial is assigned by the server when the
-                      tickets are created, so what is shown here is a preview of
-                      what this counter will issue, not an input. */}
-                  <TextInput
-                    style={[inputStyle, styles.ticketNumberInput]}
-                    value={ticketNumber}
-                    editable={false}
-                    placeholder={ticketStation ? "—" : "No counter assigned"}
-                    placeholderTextColor={theme.greyText}
-                  />
-                  {ticketStation ? (
-                    <Text style={[styles.ticketStationTag, { color: theme.greyText, borderColor: theme.border }]}>
-                      {ticketStation}
-                    </Text>
-                  ) : null}
+              {/* Nothing here for the ticket number: the server takes the next
+                  serial in this counter's series as the sale is confirmed, and
+                  the cashier sees the numbers issued on the completed-sale
+                  toast. The only case worth raising before the form is filled in
+                  is an account that cannot sell at all. */}
+              {!ticketStation && (
+                <View style={styles.mixedRow}>
+                  <FontAwesome name="exclamation-triangle" size={13} color="#e5484d" />
+                  <Text style={[styles.mixedText, { color: "#e5484d" }]}>
+                    This account has no ticket counter assigned — ask an admin to set one
+                    before selling.
+                  </Text>
                 </View>
-                <Text style={[styles.ticketStripCaption, { color: theme.greyText }]}>
-                  {!ticketStation
-                    ? "This account has no ticket counter assigned — ask an admin to set one before selling."
-                    : totalPax > 1
-                    ? `Starting number — ${totalPax} tickets run on from here, one per passenger.`
-                    : "Number printed on the physical passage ticket."}
-                </Text>
-              </View>
+              )}
 
               {isRoomBooking && canPickVoyage && (
                 <View style={styles.mixedRow}>
@@ -1670,7 +1616,7 @@ const BookingOffice = () => {
                       style={[inputStyle, { flex: 1 }, !!phoneError && styles.cInputInvalid]}
                       value={phone}
                       onChangeText={setPhone}
-                      placeholder="Phone"
+                      placeholder="Phone (optional)"
                       keyboardType="phone-pad"
                       placeholderTextColor={theme.greyText}
                     />
@@ -1678,7 +1624,7 @@ const BookingOffice = () => {
                       style={[inputStyle, { flex: 1 }]}
                       value={email}
                       onChangeText={setEmail}
-                      placeholder="Email"
+                      placeholder="Email (optional)"
                       autoCapitalize="none"
                       keyboardType="email-address"
                       placeholderTextColor={theme.greyText}
@@ -1915,35 +1861,6 @@ const styles = StyleSheet.create({
   },
   row2: { flexDirection: "row", gap: 10 },
   row2Stacked: { flexDirection: "column" },
-  ticketStrip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  ticketStripLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    fontFamily: "Lato",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  ticketStationTag: {
-    fontSize: 11,
-    fontWeight: "800",
-    fontFamily: "Lato",
-    letterSpacing: 0.5,
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    overflow: "hidden",
-  },
-  ticketNumberInput: { flex: 1 },
-  ticketStripCaption: { fontSize: 10, fontFamily: "Lato", paddingHorizontal: 2 },
   cInput: {
     borderWidth: 1,
     borderRadius: 10,

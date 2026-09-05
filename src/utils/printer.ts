@@ -15,7 +15,9 @@
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { ZReport } from "@/types/reports";
 import { bytesToBase64 } from "@/utils/escpos";
+import { renderZReport } from "@/utils/reportDoc";
 import { TicketData } from "@/utils/ticketLayout";
 import { TicketDocOptions, renderTickets, sampleTicket } from "@/utils/ticketDoc";
 
@@ -171,6 +173,25 @@ export async function printTickets(
   jobName = "Aleson passage ticket"
 ): Promise<PrintResult> {
   return sendToAgent(settings, renderTickets(tickets, docOptions(settings)), jobName);
+}
+
+/**
+ * Print the cashier's end-of-day report on the till roll.
+ *
+ * Goes to the same printer as the tickets, because that is where a Z-report
+ * belongs — it is counted against the drawer at the counter and filed with the
+ * cash, not circulated. The passenger manifest is the opposite case and prints
+ * A4 through the browser (see manifestDoc.ts).
+ */
+export async function printZReport(
+  report: ZReport,
+  settings: PrinterSettings
+): Promise<PrintResult> {
+  return sendToAgent(
+    settings,
+    renderZReport(report),
+    `Aleson end of day shift ${report.shift.id}`
+  );
 }
 
 /** One sample ticket, for checking the printer and the loaded logo. */

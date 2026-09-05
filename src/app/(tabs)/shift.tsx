@@ -22,6 +22,9 @@ interface DrawerLine {
   currency: string;
   opening_float: number;
   cash_sales: number;
+  /** Cash handed back this shift: refunds settled by hand and voided cash
+   *  sales. Already subtracted from expected_cash. */
+  cash_payouts: number;
   expected_cash: number;
 }
 
@@ -213,6 +216,16 @@ const Shift = () => {
                       <Text style={[styles.kpiLabel, { color: theme.greyText }]}>
                         Expected Cash Now ({line.currency})
                       </Text>
+                      {/* Sales less payouts. Shown broken out whenever money has
+                          gone back over the counter, so the figure to count
+                          against is never a number the cashier has to trust
+                          blindly. */}
+                      {line.cash_payouts > 0 && (
+                        <Text style={[styles.kpiLabel, { color: theme.greyText, fontSize: 12 }]}>
+                          {money(line.cash_sales, line.currency)} taken less{" "}
+                          {money(line.cash_payouts, line.currency)} paid back
+                        </Text>
+                      )}
                     </View>
                   </React.Fragment>
                 ))}

@@ -73,6 +73,7 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
 
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [waiveFee, setWaiveFee] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,12 +83,25 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
     if (visible && ticket) {
       setAmount(ticket.max_refund.toFixed(2));
       setReason("");
+      setWaiveFee(false);
       setError(null);
     }
   }, [visible, ticket]);
 
+  // Waiving lifts the ceiling from "fare less the fee" to the whole fare.
+  const ceiling = ticket ? (waiveFee ? ticket.price : ticket.max_refund) : 0;
+
+  /** Re-seed the amount as the ceiling moves, so a cashier who waives and then
+   *  un-waives is never left asking for more than the policy allows. */
+  const toggleWaiveFee = () => {
+    if (!ticket) return;
+    const next = !waiveFee;
+    setWaiveFee(next);
+    setAmount((next ? ticket.price : ticket.max_refund).toFixed(2));
+  };
+
   const amountNum = parseFloat(amount) || 0;
-  const validAmount = !!ticket && amountNum > 0 && amountNum <= ticket.max_refund;
+  const validAmount = !!ticket && amountNum > 0 && amountNum <= ceiling;
   const canConfirm = !!ticket && validAmount && reason.trim().length > 0 && !submitting;
 
   const inputStyle = [
@@ -108,6 +122,7 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
           // Records the refund without calling AUB. The backend rejects a
           // gateway refund it cannot perform rather than silently doing this.
           manual: !ticket.gateway_refundable,
+          waive_fee: waiveFee,
         }),
       });
       if (!res.ok) {
@@ -147,7 +162,15 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
               <Text style={{ color: theme.greyText, fontSize: 13 }}>
                 Cancellation fee ({Math.round(ticket.fee_rate * 100)}%)
               </Text>
-              <Text style={{ color: "#e5484d", fontSize: 13 }}>−{money(ticket.cancellation_fee, ticket.currency)}</Text>
+              <Text
+                style={{
+                  color: waiveFee ? theme.greyText : "#e5484d",
+                  fontSize: 13,
+                  textDecorationLine: waiveFee ? "line-through" : "none",
+                }}
+              >
+                −{money(ticket.cancellation_fee, ticket.currency)}
+              </Text>
             </View>
             <Text style={{ color: theme.greyText, fontSize: 11.5, lineHeight: 16 }}>
               {ticket.trip_departed
@@ -156,9 +179,45 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
             </Text>
             <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 6 }]}>
               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>Refundable</Text>
-              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{money(ticket.max_refund, ticket.currency)}</Text>
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{money(ceiling, ticket.currency)}</Text>
             </View>
           </View>
+
+          {/* For a fault that is the operator's rather than the passenger's —
+              typically a ticket sold in error and only caught after the sailing
+              had gone, so it can no longer be voided. Charging the fee there
+              bills someone for a counter's own mistake. Every waiver is
+              audited with the amount given away. */}
+          <Pressable
+            onPress={toggleWaiveFee}
+            style={[
+              styles.waive,
+              {
+                borderColor: waiveFee ? theme.tint : theme.border,
+                backgroundColor: waiveFee ? theme.tint + "14" : "transparent",
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.checkbox,
+                {
+                  borderColor: waiveFee ? theme.tint : theme.greyText,
+                  backgroundColor: waiveFee ? theme.tint : "transparent",
+                },
+              ]}
+            >
+              {waiveFee ? <Text style={styles.checkmark}>✓</Text> : null}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>
+                Waive the cancellation fee
+              </Text>
+              <Text style={{ color: theme.greyText, fontSize: 11.5, lineHeight: 16 }}>
+                Return the whole fare. For our own error, not a change of mind.
+              </Text>
+            </View>
+          </Pressable>
 
           <View
             style={[
@@ -184,7 +243,7 @@ const RefundModal = ({ visible, ticket, onClose, onSuccess }: RefundModalProps) 
             placeholderTextColor={theme.greyText}
           />
           {!validAmount && amount.length > 0 && (
-            <Text style={styles.errorText}>Amount must be between 0 and {money(ticket.max_refund, ticket.currency)}.</Text>
+            <Text style={styles.errorText}>Amount must be between 0 and {money(ceiling, ticket.currency)}.</Text>
           )}
 
           <Text style={[styles.label, { color: theme.greyText, marginTop: 12 }]}>REASON</Text>
@@ -251,6 +310,25 @@ const styles = StyleSheet.create({
   breakdown: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 14, gap: 6 },
   breakdownRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   payout: { borderWidth: 1, borderRadius: 10, padding: 10, marginBottom: 14 },
+  waive: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    borderWidth: 1.5,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 14,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  checkmark: { color: "#fff", fontSize: 13, fontWeight: "900", lineHeight: 16 },
   actions: { flexDirection: "row", gap: 10, marginTop: 18 },
   btn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center" },
   btnGhost: { borderWidth: 1.5, backgroundColor: "transparent" },

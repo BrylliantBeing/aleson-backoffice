@@ -1,4 +1,5 @@
 ﻿import Background from "@/components/Background";
+import CancelModal, { CancellableTicket } from "@/components/CancelModal";
 import RebookModal, { RebookableTicket } from "@/components/RebookModal";
 import RefundModal, { RefundableTicket } from "@/components/RefundModal";
 import WholeCard from "@/components/WholeCard";
@@ -47,6 +48,13 @@ interface OfficeTicket {
   ticket_number: string | null;
   eligible: boolean;
   refundable: boolean;
+  /** Whether this ticket can still be voided as a counter error: only while the
+   *  sailing is still to leave and nobody has boarded on it. Decided by the API
+   *  so the counter never offers an action the API would refuse. */
+  cancellable: boolean;
+  cancelled_by_fk: number | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
   cancellation_fee: number;
   /** Rate behind cancellation_fee, as a fraction — 0.10 before departure, 0.40 after. */
   fee_rate: number;
@@ -114,6 +122,7 @@ const RefundRebooking = () => {
 
   const [refundTarget, setRefundTarget] = useState<RefundableTicket | null>(null);
   const [rebookTarget, setRebookTarget] = useState<RebookableTicket | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CancellableTicket | null>(null);
 
   const runSearch = async (ref: string) => {
     const trimmed = ref.trim();
@@ -155,6 +164,7 @@ const RefundRebooking = () => {
   const refresh = () => {
     setRefundTarget(null);
     setRebookTarget(null);
+    setCancelTarget(null);
     if (booking) runSearch(booking.booking_reference);
   };
 
@@ -258,6 +268,15 @@ const RefundRebooking = () => {
                         Rebooked → new ticket #{t.rebooked_to_ticket_fk}
                       </Text>
                     )}
+                    {/* A ticket cancelled away by a rebooking already says so
+                        above; this is the counter-error case, where the fare
+                        went back in full. */}
+                    {t.status === "Cancelled" && t.cancelled_at && (
+                      <Text style={{ color: theme.greyText, fontSize: 11, marginTop: 2 }}>
+                        Voided {formatDate(t.cancelled_at)} · {money(t.price, t.currency)} returned
+                        in full — {t.cancel_reason}
+                      </Text>
+                    )}
                   </View>
 
                   <View style={{ alignItems: "flex-end", gap: 6 }}>
@@ -309,6 +328,32 @@ const RefundRebooking = () => {
                         >
                           <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>Rebook</Text>
                         </Pressable>
+                        {/* Correcting a ticket this counter issued wrongly. Not
+                            a refund: no fee is withheld, so it is a separate
+                            action rather than an option inside Refund. */}
+                        {t.cancellable && (
+                          <Pressable
+                            onPress={() =>
+                              setCancelTarget({
+                                id: t.id,
+                                price: t.price,
+                                currency: t.currency,
+                                passenger_name: t.passenger_name,
+                                seat_number: t.seat_number,
+                                ticket_number: t.ticket_number,
+                                origin: t.origin,
+                                destination: t.destination,
+                                payment_method: booking?.payment_method ?? null,
+                                gateway_refundable: !!booking?.gateway_refundable,
+                              })
+                            }
+                            style={[styles.actionBtn, { borderColor: theme.greyText }]}
+                          >
+                            <Text style={{ color: theme.greyText, fontSize: 12, fontWeight: "700" }}>
+                              Void
+                            </Text>
+                          </Pressable>
+                        )}
                       </View>
                     )}
                   </View>
@@ -335,6 +380,12 @@ const RefundRebooking = () => {
         visible={!!rebookTarget}
         ticket={rebookTarget}
         onClose={() => setRebookTarget(null)}
+        onSuccess={refresh}
+      />
+      <CancelModal
+        visible={!!cancelTarget}
+        ticket={cancelTarget}
+        onClose={() => setCancelTarget(null)}
         onSuccess={refresh}
       />
     </Background>

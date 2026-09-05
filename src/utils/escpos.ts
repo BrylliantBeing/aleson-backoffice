@@ -44,6 +44,10 @@ const TRANSLITERATE: Record<string, string> = {
   "₱": "P",
   "–": "-",
   "—": "-",
+  // Routes arrive from the API as "Zamboanga → Sandakan"; without this the
+  // arrow falls through to the "?" catch-all and the roll reads "Zamboanga ?
+  // Sandakan".
+  "→": "->",
   "‘": "'",
   "’": "'",
   "“": '"',
