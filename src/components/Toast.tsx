@@ -27,9 +27,6 @@ interface Props {
   actionLabel?: string;
   onAction?: () => void;
   onDismiss: () => void;
-  /** Rendered height, so a sticky toast can be given room instead of covering
-   *  the controls underneath it. */
-  onMeasure?: (height: number) => void;
 }
 
 const ACCENT = { success: "#2e9e5b", error: "#e5484d" } as const;
@@ -48,7 +45,6 @@ const Toast = ({
   actionLabel,
   onAction,
   onDismiss,
-  onMeasure,
 }: Props) => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
@@ -73,7 +69,6 @@ const Toast = ({
   return (
     <View style={styles.layer} pointerEvents="box-none">
       <Animated.View
-        onLayout={(e) => onMeasure?.(e.nativeEvent.layout.height)}
         style={[
           styles.toast,
           {

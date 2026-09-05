@@ -225,7 +225,6 @@ const BookingOffice = () => {
     | null
   >(null);
   // Measured toast height, used to keep the grid clear of it while it is up.
-  const [toastHeight, setToastHeight] = useState(0);
 
   // ── Ticket printing ──────────────────────────────────────────────────────
   // Settings are per-counter (which Windows printer to use), so they load from
@@ -1384,9 +1383,11 @@ const BookingOffice = () => {
         </View>
 
         {/* 3-column grid filling the rest of the viewport (no scroll). The
-            toast now stays up until it is dismissed, so the grid gives back
-            its footprint rather than letting it cover Confirm Payment. */}
-        <View style={[gridStyle, toast ? { paddingBottom: toastHeight + 24 } : null]}>
+            toast floats over this rather than being given room in it: reserving
+            its footprint re-laid the whole grid out the moment a sale
+            completed, shrinking all three columns and moving the panels under
+            the cashier's eyes while they were still reading them. */}
+        <View style={gridStyle}>
           {/* ── Column 1: Trip ── */}
           <View style={[styles.col, colTrip, { zIndex: 3 }]}>
             <View
@@ -1847,7 +1848,6 @@ const BookingOffice = () => {
         // customer coming back — until the cashier closes it or the next sale
         // is confirmed and replaces it.
         duration={0}
-        onMeasure={setToastHeight}
         actionLabel={
           printerSettings.enabled && lastTickets.current.length > 0 ? "Reprint" : undefined
         }
