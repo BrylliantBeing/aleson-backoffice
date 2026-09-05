@@ -1,6 +1,7 @@
 import Background from "@/components/Background";
 import CustomSelectList from "@/components/CustomSelectList";
 import DateField from "@/components/DateField";
+import EmailField from "@/components/EmailField";
 import IdTypeField from "@/components/IdTypeField";
 import MiniCalendar from "@/components/MiniCalendar";
 import NationalityField from "@/components/NationalityField";
@@ -539,8 +540,22 @@ const BookingOffice = () => {
   const setCount = (key: Category, delta: number) =>
     setCounts((c) => ({ ...c, [key]: Math.max(0, (c[key] || 0) + delta) }));
 
-  const updatePassenger = (id: string, patch: Partial<PassengerRow>) =>
-    setPassengers((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  // Names go on the manifest, which is read at the pier and by Malaysian
+  // immigration on the Sandakan run, so they are folded to upper case as they
+  // are keyed — the counter has always written them that way, and a row typed
+  // "dela cruz" should not print differently from the one beside it. Done on
+  // the way into state rather than on submit so the clerk sees what will be
+  // printed while they can still fix it.
+  const NAME_KEYS = ["first_name", "middle_initial", "last_name"] as const;
+
+  const updatePassenger = (id: string, patch: Partial<PassengerRow>) => {
+    const next = { ...patch };
+    for (const k of NAME_KEYS) {
+      const v = next[k];
+      if (typeof v === "string") next[k] = v.toUpperCase();
+    }
+    setPassengers((prev) => prev.map((p) => (p.id === id ? { ...p, ...next } : p)));
+  };
 
   // Enter/next focus chain across passenger-detail inputs. Each row contributes
   // 6 typed fields in visual order — first, MI, last, birthdate, ID type, ID
@@ -556,6 +571,24 @@ const BookingOffice = () => {
   const paxInputRefs = useRef<Record<number, TextInput | null>>({});
   const focusPaxField = (flatIndex: number) =>
     paxInputRefs.current[flatIndex + 1]?.focus();
+
+  // Leaving the last passenger's ID number goes straight to the phone box.
+  // Between the two sit the contact-person chips and the two contact-name
+  // fields, which the clerk almost never touches — the contact defaults to the
+  // sole passenger and the names mirror whoever is picked — so tabbing through
+  // them was three dead stops on the way to the one box still worth typing.
+  // Picking a different contact person is still there for the sale that needs
+  // it; it is just no longer on the path of the sale that doesn't.
+  const phoneRef = useRef<TextInput | null>(null);
+  const skipToPhone = (i: number) => (e: any) => {
+    if (i !== passengers.length - 1) return;
+    const key = e?.nativeEvent?.key ?? e?.key;
+    // Shift+Tab still walks back up the row it came from.
+    const shifted = e?.nativeEvent?.shiftKey ?? e?.shiftKey;
+    if (key !== "Tab" || shifted) return;
+    e?.preventDefault?.();
+    phoneRef.current?.focus();
+  };
 
   // Validation gate for submission.
   const passengersComplete =
@@ -902,12 +935,19 @@ const BookingOffice = () => {
     }
   };
 
-  const resetForm = () => {
-    setTripType("one-way");
-    setOrigin("");
-    setDestination("");
-    setDepDate(todayISO());
-    setRetDate("");
+  // Clear the passengers and the payment, keep the sailing.
+  //
+  // A counter works a queue for one departure: the next customer almost always
+  // wants the same route on the same day, and re-picking trip type, origin,
+  // destination and date for every sale was four controls of pure repetition.
+  // So the trip survives and only the party resets — passenger counts back to
+  // zero, which is what makes the next sale start from a clean slate.
+  //
+  // The chosen voyage and class do NOT survive, deliberately. Seat availability
+  // has just changed by the sale that was made, so the lists are dropped and
+  // refetched by the effect that watches the route and date; keeping the old
+  // ones would offer seats that were sold thirty seconds ago.
+  const resetForNextSale = () => {
     setCounts(emptyCounts());
     setDepVoyages([]);
     setRetVoyages([]);
@@ -939,7 +979,7 @@ const BookingOffice = () => {
     // The serial and the boarding token are both assigned by the server, so the
     // snapshot taken before the call is incomplete until they are paired back in.
     lastTickets.current = attachServerTickets(lastTickets.current, serverTickets);
-    resetForm();
+    resetForNextSale();
     setToast(sale);
     // Fire and forget: printing must not delay clearing the counter, and its
     // outcome is reported separately so a paper jam never looks like a failed sale.
@@ -1210,8 +1250,15 @@ const BookingOffice = () => {
           autoCapitalize="characters"
           autoCorrect={false}
           returnKeyType={i === passengers.length - 1 ? "done" : "next"}
-          blurOnSubmit={i === passengers.length - 1}
-          onSubmitEditing={() => focusPaxField(i * PAX_FIELDS + 5)}
+          blurOnSubmit={false}
+          onKeyPress={skipToPhone(i)}
+          // Enter follows Tab to the same place rather than dead-ending, which
+          // is what it did on the last row before.
+          onSubmitEditing={() =>
+            i === passengers.length - 1
+              ? phoneRef.current?.focus()
+              : focusPaxField(i * PAX_FIELDS + 5)
+          }
         />
         {isRoomBooking && (
           <Pressable
@@ -1613,6 +1660,7 @@ const BookingOffice = () => {
                   </View>
                   <View style={styles.row2}>
                     <TextInput
+                      ref={phoneRef}
                       style={[inputStyle, { flex: 1 }, !!phoneError && styles.cInputInvalid]}
                       value={phone}
                       onChangeText={setPhone}
@@ -1620,14 +1668,12 @@ const BookingOffice = () => {
                       keyboardType="phone-pad"
                       placeholderTextColor={theme.greyText}
                     />
-                    <TextInput
-                      style={[inputStyle, { flex: 1 }]}
+                    <EmailField
                       value={email}
-                      onChangeText={setEmail}
+                      onChange={setEmail}
+                      style={{ flex: 1 }}
+                      inputStyle={inputStyle}
                       placeholder="Email (optional)"
-                      autoCapitalize="none"
-                      keyboardType="email-address"
-                      placeholderTextColor={theme.greyText}
                     />
                   </View>
 

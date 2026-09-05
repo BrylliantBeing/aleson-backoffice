@@ -1,6 +1,13 @@
 import Colors from "@/constants/Colors";
-import { ID_TYPES, PINNED_ID_TYPES } from "@/constants/idTypes";
+import { PINNED_EMAIL_DOMAINS } from "@/constants/emailDomains";
 import { LIST_MAX, ROW_HEIGHT, measureDrop } from "@/utils/dropdown";
+import {
+  completeWith,
+  completionFor,
+  emailMatches,
+  isDeletion,
+  splitEmail,
+} from "@/utils/emailComplete";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
@@ -15,74 +22,45 @@ import {
   ViewStyle,
 } from "react-native";
 
-const PINNED = new Set<string>(PINNED_ID_TYPES);
+const PINNED = new Set<string>(PINNED_EMAIL_DOMAINS);
 
 /**
- * ID-type combobox for the passenger table row: typed, not tapped.
+ * Email field that completes the domain, in the shape of the ID-type combobox.
  *
- * The value still comes from a fixed list — the manifest is read by the coast
- * guard and by Malaysian immigration on the Sandakan run, so one name per
- * document matters more than letting the cashier type anything — but reaching
- * for a modal cost a mouse trip per passenger. Here the clerk types and the
- * field completes: "pas" fills in "Passport" with the added letters selected,
- * Tab (or Enter) takes it and moves on, so a whole passenger row stays on the
- * keyboard. Anything typed that resolves to nothing clears on blur rather than
- * riding onto the manifest as free text.
+ * Same gesture as IdTypeField — type, the field fills in the rest with the
+ * added letters selected, Tab or Enter takes it — for the same reason: an email
+ * address is a dozen keystrokes of which nine sales in ten are the same three
+ * domains, and the clerk is standing at a counter with a queue.
+ *
+ * It differs from IdTypeField in the one way that matters: the vocabulary is
+ * OPEN. An ID type that resolves to nothing is cleared on blur, because the
+ * manifest may only carry documents the coast guard recognises. An email is
+ * whatever the passenger says it is, so anything typed here survives exactly as
+ * keyed and the list is only ever a shortcut. Nothing is ever cleared or
+ * rewritten behind the clerk.
+ *
+ * Completion starts only once there is an "@" with something in front of it —
+ * before that, every keystroke is the local part and there is nothing to guess.
  */
-interface IdTypeFieldProps {
+interface EmailFieldProps {
   value: string;
-  onChange: (idType: string) => void;
-  /** Sizing for the field's wrapper (the row's flex basis). */
+  onChange: (email: string) => void;
+  /** Sizing for the field's wrapper. */
   style?: ViewStyle | ViewStyle[];
-  /** Box/text styling for the input itself, matching the row's other cells. */
+  /** Box/text styling for the input itself, matching its neighbours. */
   inputStyle?: TextStyle | TextStyle[];
   placeholder?: string;
-  /**
-   * Fires as the suggestion list opens and closes. A row sets its own stacking
-   * order, so the list can only escape it if the row it lives in is raised
-   * while it's open — which only the row's owner can do.
-   */
-  onOpenChange?: (open: boolean) => void;
   onSubmitEditing?: TextInputProps["onSubmitEditing"];
   returnKeyType?: TextInputProps["returnKeyType"];
   blurOnSubmit?: boolean;
 }
 
-/** How close a list entry is to what was typed; -1 when it isn't a match. */
-const rank = (item: string, query: string): number => {
-  const s = item.toLowerCase();
-  if (s.startsWith(query)) return 0;
-  // Word starts, so "phil" reaches "National ID (PhilSys)" and "sirb" the
-  // seaman's book — the part of the name the clerk says out loud is often not
-  // the first word.
-  if (s.split(/[^a-z0-9]+/).some((w) => w && w.startsWith(query))) return 1;
-  if (s.includes(query)) return 2;
-  return -1;
-};
-
-const matchesFor = (typed: string): string[] => {
-  const query = typed.trim().toLowerCase();
-  if (!query) return ID_TYPES;
-  return ID_TYPES.map((item, i) => ({ item, r: rank(item, query), i }))
-    .filter((m) => m.r >= 0)
-    // Ties keep the list's own order, which already puts the counter's three
-    // commonest documents first.
-    .sort((a, b) => a.r - b.r || a.i - b.i)
-    .map((m) => m.item);
-};
-
-const exactMatch = (typed: string): string | undefined => {
-  const q = typed.trim().toLowerCase();
-  return ID_TYPES.find((item) => item.toLowerCase() === q);
-};
-
-const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
+const EmailField = React.forwardRef<TextInput, EmailFieldProps>(({
   value,
   onChange,
   style,
   inputStyle,
-  placeholder = "ID type",
-  onOpenChange,
+  placeholder = "Email (optional)",
   onSubmitEditing,
   returnKeyType,
   blurOnSubmit,
@@ -91,16 +69,13 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
   const theme = Colors[colorScheme] ?? Colors.light;
 
   // `typed` is what the clerk actually keyed; `text` is what the field shows,
-  // which is `typed` plus the completed tail while a suggestion is standing.
+  // which is `typed` plus the completed domain tail while a suggestion stands.
   const [typed, setTyped] = useState(value);
   const [text, setText] = useState(value);
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>();
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
-  const [drop, setDrop] = useState<{ flip: boolean; max: number }>({
-    flip: false,
-    max: LIST_MAX,
-  });
+  const [drop, setDrop] = useState({ flip: false, max: LIST_MAX });
 
   const wrapRef = useRef<View>(null);
   // Mirrors `typed` so a keystroke sees the previous prefix even if React has
@@ -111,8 +86,7 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
     setTyped(next);
   };
   // Last value this field sent up, so the round trip back through `value` isn't
-  // mistaken for someone else setting the field. Half-typed text reports itself
-  // as "" — without this the echo of that "" wipes the row mid-word.
+  // mistaken for someone else setting the field.
   const emitted = useRef(value);
   // Clicking an option blurs the input first, and react-native-web reports the
   // press a tick later — so the blur can't tear the list down on the spot or
@@ -124,8 +98,6 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
     blurTimer.current = null;
   };
   useEffect(() => cancelBlur, []);
-  // Set while focus is handed back after a click, so the list doesn't spring
-  // straight back open on the choice the clerk just made.
   const justPicked = useRef(false);
   const innerRef = useRef<TextInput | null>(null);
   const attachRef = (el: TextInput | null) => {
@@ -134,21 +106,15 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
     else if (ref) (ref as React.MutableRefObject<TextInput | null>).current = el;
   };
 
-  const matches = useMemo(() => matchesFor(typed), [typed]);
-
-  const openChange = useRef(onOpenChange);
-  openChange.current = onOpenChange;
-  useEffect(() => {
-    openChange.current?.(open);
-  }, [open]);
+  const matches = useMemo(() => emailMatches(typed), [typed]);
 
   const emit = (next: string) => {
     emitted.current = next;
     onChange(next);
   };
 
-  // External resets (clearing the form, or a value set elsewhere) without
-  // clobbering what is being typed.
+  // External resets (clearing the form after a sale) without clobbering what is
+  // being typed.
   useEffect(() => {
     if (value === emitted.current) return;
     emitted.current = value;
@@ -158,62 +124,50 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
   }, [value]);
 
   /**
-   * Fill the field with `pick`, leaving the part the clerk didn't type selected
-   * so the next keystroke replaces it. Only for a pick that starts with what
-   * was keyed — anything else would have to throw their letters away to show
-   * itself, so those stay in the list and wait for Tab.
+   * Show `domain` on the end of the address, leaving the part the clerk didn't
+   * type selected so the next keystroke replaces it.
    */
-  const complete = (pick: string, prefix: string) => {
-    setText(pick);
-    setSelection({ start: prefix.length, end: pick.length });
-    emit(pick);
+  const complete = (domain: string, source: string) => {
+    const done = completeWith(source, domain);
+    if (!done) return;
+    setText(done.text);
+    setSelection({ start: done.selectionStart, end: done.text.length });
+    emit(done.text);
   };
 
   const handleChange = (raw: string) => {
     // Backspace has to be able to shorten the field, so a change that only
-    // walks back the prefix already keyed doesn't complete again. Typing over
-    // the selected tail also shortens the box, but replaces the prefix rather
-    // than trimming it — that still completes, or every second keystroke would
-    // drop the suggestion.
-    const prev = typedRef.current;
-    const deleting =
-      raw.length <= prev.length && prev.toLowerCase().startsWith(raw.toLowerCase());
+    // walks back what was already keyed doesn't complete again. Typing over the
+    // selected tail also shortens the box, but replaces rather than trims —
+    // that still completes, or every second keystroke would drop the suggestion.
+    const deleting = isDeletion(typedRef.current, raw);
     keyed(raw);
     setHi(0);
     setOpen(true);
-    const best = matchesFor(raw)[0];
-    if (!deleting && raw.trim() && best?.toLowerCase().startsWith(raw.toLowerCase())) {
-      complete(best, raw);
+    const done = deleting ? null : completionFor(raw);
+    if (done) {
+      setText(done.text);
+      setSelection({ start: done.selectionStart, end: done.text.length });
+      emit(done.text);
       return;
     }
     setText(raw);
     setSelection(undefined);
-    emit(exactMatch(raw) ?? "");
+    // Open vocabulary: whatever is in the box is the answer, match or not.
+    emit(raw);
   };
 
   /** Walk the suggestion list, dropping each one into the field as it's reached. */
   const move = (delta: number) => {
     if (!matches.length) return;
     const next = (hi + delta + matches.length) % matches.length;
-    const pick = matches[next];
     setHi(next);
-    if (pick.toLowerCase().startsWith(typedRef.current.toLowerCase())) {
-      complete(pick, typedRef.current);
-      return;
-    }
-    // A match that isn't a completion of the query can only be shown by
-    // replacing the box, so the box's contents become the pick — but the query
-    // behind the list is left alone, or arrowing on would filter the list down
-    // to whatever it just landed on.
-    setText(pick);
-    typedRef.current = pick;
-    setSelection({ start: pick.length, end: pick.length });
-    emit(pick);
+    complete(matches[next], typedRef.current);
   };
 
-  /** Take the standing suggestion (or `choice`) as the field's final value. */
+  /** Take the standing suggestion (or `choice`) and stop completing. */
   const commit = (choice?: string) => {
-    const final = typed.trim() ? choice ?? matches[hi] ?? exactMatch(typed) ?? "" : "";
+    const final = choice ? `${splitEmail(typedRef.current).local}@${choice}` : text;
     setText(final);
     keyed(final);
     setSelection({ start: final.length, end: final.length });
@@ -235,8 +189,8 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
   const handleKeyPress = (e: any) => {
     const key = e?.nativeEvent?.key ?? e?.key;
     if (key === "Tab") {
-      // Take the suggestion and let focus carry on to the ID number — one key
-      // for both is the point of typing the field instead of tapping it.
+      // Take the completion and let focus carry on — one key for both is the
+      // point of typing the field instead of tapping it.
       commit();
     } else if (key === "Escape") {
       setOpen(false);
@@ -249,7 +203,7 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
       if (open) move(-1);
     } else if (key === "Enter") {
       // No preventDefault: react-native-web still fires onSubmitEditing, which
-      // is what carries the focus chain on to the next field.
+      // is what carries the focus chain on.
       commit();
     }
   };
@@ -273,15 +227,18 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
           cancelBlur();
           blurTimer.current = setTimeout(() => {
             blurTimer.current = null;
-            if (!pressing.current) commit();
+            // Only closes the list. Nothing is rewritten on the way out: the
+            // address in the box is the passenger's, matched or not.
+            if (!pressing.current) setOpen(false);
           }, 150);
         }}
         onKeyPress={handleKeyPress}
         placeholder={placeholder}
         placeholderTextColor={theme.greyText}
+        autoCapitalize="none"
         autoCorrect={false}
         autoComplete="off"
-        selectTextOnFocus
+        keyboardType="email-address"
         onSubmitEditing={onSubmitEditing}
         returnKeyType={returnKeyType}
         blurOnSubmit={blurOnSubmit}
@@ -300,24 +257,22 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
           ]}
         >
           <ScrollView keyboardShouldPersistTaps="always" style={{ maxHeight: drop.max }}>
-            {matches.map((item, index) => {
+            {matches.map((domain, index) => {
               const active = index === hi;
               // Hairline under the pinned block so the list reads as "common
-              // first, then everyone else" rather than a broken alphabetical run.
+              // first, then everyone else".
               const lastPinned =
-                !typed.trim() && PINNED.has(item) && !PINNED.has(matches[index + 1] ?? "");
+                PINNED.has(domain) && !PINNED.has(matches[index + 1] ?? "");
               return (
                 <Pressable
-                  key={item}
+                  key={domain}
                   onPressIn={() => {
                     pressing.current = true;
                   }}
                   onPress={() => {
                     cancelBlur();
                     pressing.current = false;
-                    commit(item);
-                    // Back to the field, so the row can be finished on the
-                    // keyboard from here.
+                    commit(domain);
                     justPicked.current = true;
                     innerRef.current?.focus();
                     setTimeout(() => {
@@ -339,7 +294,7 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
                       fontWeight: active ? "700" : "400",
                     }}
                   >
-                    {item}
+                    @{domain}
                   </Text>
                 </Pressable>
               );
@@ -351,19 +306,20 @@ const IdTypeField = React.forwardRef<TextInput, IdTypeFieldProps>(({
   );
 });
 
-IdTypeField.displayName = "IdTypeField";
+EmailField.displayName = "EmailField";
 
-export default IdTypeField;
+export default EmailField;
 
 const styles = StyleSheet.create({
   wrap: { position: "relative" },
-  // Sits above the fields that follow it in the row while the list is open;
-  // equal z-indexes let the next sibling bury it.
+  // Sits above the fields that follow it while the list is open; equal
+  // z-indexes let the next sibling bury it.
   wrapOpen: { zIndex: 50 },
   list: {
     position: "absolute",
     left: 0,
-    minWidth: 190,
+    right: 0,
+    minWidth: 170,
     borderWidth: 1,
     borderRadius: 10,
     overflow: "hidden",
