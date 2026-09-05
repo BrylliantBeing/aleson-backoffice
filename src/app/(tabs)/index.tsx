@@ -176,6 +176,12 @@ const BookingOffice = () => {
   // ── Voyage + class selection ────────────────────────────────────────────
   const [depVoyages, setDepVoyages] = useState<Voyage[]>([]);
   const [retVoyages, setRetVoyages] = useState<Voyage[]>([]);
+  // Bumped after a completed sale to refetch the voyage lists even though the
+  // route and date have deliberately NOT changed. The two effects below key off
+  // the route and date alone, so without this they never run again once the
+  // trip survives a sale — the lists would be cleared and stay empty, and the
+  // clerk would have to retype the route to get their sailings back.
+  const [voyageReload, setVoyageReload] = useState(0);
   const [loadingDep, setLoadingDep] = useState(false);
   const [loadingRet, setLoadingRet] = useState(false);
   const [depVoyageId, setDepVoyageId] = useState<number | null>(null);
@@ -417,7 +423,7 @@ const BookingOffice = () => {
       .finally(() => setLoadingDep(false));
     setDepVoyageId(null);
     setDepClass("");
-  }, [origin, destination, depDate]);
+  }, [origin, destination, depDate, voyageReload]);
 
   // Fetch return voyages (swapped route).
   useEffect(() => {
@@ -435,7 +441,7 @@ const BookingOffice = () => {
       .finally(() => setLoadingRet(false));
     setRetVoyageId(null);
     setRetClass("");
-  }, [tripType, origin, destination, retDate]);
+  }, [tripType, origin, destination, retDate, voyageReload]);
 
   const depVoyage = depVoyages.find((v) => v.voyage_id === depVoyageId);
   const retVoyage = retVoyages.find((v) => v.voyage_id === retVoyageId);
@@ -943,14 +949,18 @@ const BookingOffice = () => {
   // So the trip survives and only the party resets — passenger counts back to
   // zero, which is what makes the next sale start from a clean slate.
   //
-  // The chosen voyage and class do NOT survive, deliberately. Seat availability
-  // has just changed by the sale that was made, so the lists are dropped and
-  // refetched by the effect that watches the route and date; keeping the old
-  // ones would offer seats that were sold thirty seconds ago.
+  // The chosen voyage and class do NOT survive, deliberately: seat availability
+  // has just changed by the sale that was made, and keeping the old lists would
+  // offer seats sold thirty seconds ago. Dropping them is not enough on its own
+  // — the fetch effects watch the route and date, which no longer change here —
+  // so the reload counter is what actually brings the sailings back.
   const resetForNextSale = () => {
     setCounts(emptyCounts());
+    // Cleared for the instant before the refetch lands, so seats sold by the
+    // sale just made are never briefly offered to the next customer.
     setDepVoyages([]);
     setRetVoyages([]);
+    setVoyageReload((n) => n + 1);
     setDepVoyageId(null);
     setRetVoyageId(null);
     setDepClass("");
