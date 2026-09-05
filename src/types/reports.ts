@@ -68,6 +68,76 @@ export interface ReportVoyage {
   amounts: { currency: string; passengers: number; amount: number }[];
 }
 
+/**
+ * One sailing's line on the front page of the operator's pack.
+ *
+ * Not a roll-up of what the shift sold: a refund paid today against a ticket
+ * sold last week belongs to that older sailing, which then appears here with no
+ * tickets issued and a negative total. The server unions sales, refunds and
+ * voids on (sailing, currency) for exactly that reason.
+ */
+export interface ReportVoyageSummary {
+  trip_id: number;
+  currency: string;
+  /** "Zamboanga - Bongao". */
+  route: string;
+  /** "ZAM-BGO", as the ticket-sales page prints it. */
+  route_code: string;
+  vessel: string;
+  /** "0831ZAMBGO2026" — the operator's own way of naming a sailing. */
+  voyage_no: string | null;
+  voyage_date: string | null;
+  scheduled_departure: string | null;
+  tickets_issued: number;
+  ticket_sales: number;
+  cancels: number;
+  refunds: number;
+  /** ticket_sales - cancels - refunds; negative on a refund-only sailing. */
+  total_sales: number;
+}
+
+/** One line of the REFUNDS page. */
+export interface ReportRefundLine {
+  ticket_number: string | null;
+  voyage_no: string | null;
+  /** "SURNAME, Given". */
+  passenger: string;
+  discount: string;
+  total_fare: number;
+  /** What was withheld — total_fare less total_refund. */
+  surcharge: number;
+  /** Not a state this system records; the column exists so the sheet matches
+   *  the one it replaces, and reads zero. */
+  no_show: number;
+  total_refund: number;
+  currency: string;
+  refunded_at: string | null;
+}
+
+/** One line of the CANCELLED BOOKINGS page. Both stamps are shown because the
+ *  pair is the point: a void minutes after issue is a counter slip. */
+export interface ReportCancelLine {
+  ticket_number: string | null;
+  voyage_no: string | null;
+  passenger: string;
+  date_issued: string | null;
+  date_cancelled: string | null;
+  total_fare: number;
+  currency: string;
+}
+
+/** One line of the TICKET SALES page. */
+export interface ReportSaleLine {
+  ticket_number: string | null;
+  passenger: string;
+  route_code: string;
+  accommodation: string;
+  seat_number: string;
+  discount: string;
+  fare: number;
+  currency: string;
+}
+
 export interface ZReport {
   shift: {
     id: number;
@@ -90,6 +160,12 @@ export interface ZReport {
   serial_from: string | null;
   serial_to: string | null;
   voyages: ReportVoyage[];
+  /** The operator's pack: front-page summary, then a page each for the
+   *  refunds, the voids and the tickets issued. */
+  voyage_summary: ReportVoyageSummary[];
+  refunds_detail: ReportRefundLine[];
+  cancels_detail: ReportCancelLine[];
+  sales_detail: ReportSaleLine[];
   generated_at: string;
   generated_by: string;
 }
