@@ -1,11 +1,19 @@
 import Background from "@/components/Background";
 import CustomCalendar from "@/components/CustomCalendar";
+import PrinterSetupModal from "@/components/PrinterSetupModal";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { useAuth } from "@/context/AuthContext";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import {
+  DEFAULT_SETTINGS,
+  loadPrinterSettings,
+  PrinterSettings,
+  printTickets,
+} from "@/utils/printer";
 import { seatNumberLabel } from "@/utils/seatLabel";
+import { buildReprintTickets, ReprintBooking } from "@/utils/ticketLayout";
 import { FontAwesome } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -121,6 +129,11 @@ const STATUS_COLOR: Record<string, string> = {
   Cancelled: "#5a6b7b",
 };
 
+/** Ticket statuses that are still a valid boarding document, and so still
+ *  reprintable. A refunded ticket — or one rebooked away, which is Cancelled —
+ *  must not be handed back to a passenger; its replacement prints instead. */
+const LIVE_TICKET = new Set(["Booked", "Boarded"]);
+
 const METHOD_ICON: Record<string, keyof typeof FontAwesome.glyphMap> = {
   cash: "money",
   card: "credit-card",
@@ -177,6 +190,67 @@ const Transactions = () => {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
 
+  // The printer belongs to the counter, not to the cashier, so its settings
+  // come from this machine's storage (see utils/printer.ts).
+  const [printerSettings, setPrinterSettings] = useState<PrinterSettings>(DEFAULT_SETTINGS);
+  const [printerOpen, setPrinterOpen] = useState(false);
+  const [reprinting, setReprinting] = useState<number | null>(null);
+  // Keyed by booking so the outcome stays on the row it belongs to.
+  const [reprintMsg, setReprintMsg] =
+    useState<{ id: number; ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    loadPrinterSettings().then(setPrinterSettings);
+  }, []);
+
+  /**
+   * Print a past sale's tickets again — a jammed roll, a printer that was off
+   * when the sale settled, a passenger who lost the paper.
+   *
+   * Nothing is re-issued: the server rebuilds the same document from Postgres
+   * (same serials, same boarding tokens, same issuing counter and date as the
+   * original sale) and audits the duplicate. This only formats and sends it.
+   */
+  const reprint = async (t: Transaction) => {
+    if (!printerSettings.enabled) {
+      setReprintMsg({
+        id: t.id,
+        ok: false,
+        text: "Printing is switched off on this PC. Turn it on in Printer setup.",
+      });
+      return;
+    }
+    setReprintMsg(null);
+    setReprinting(t.id);
+    try {
+      const res = await apiFetch(
+        `/api/v1/office/bookings/${encodeURIComponent(t.booking_reference)}/reprint`,
+        { method: "POST", body: JSON.stringify({}) }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "Could not load this sale's tickets.");
+      const tickets = buildReprintTickets(data as ReprintBooking);
+      const result = await printTickets(
+        tickets,
+        printerSettings,
+        `Aleson reprint ${t.booking_reference}`
+      );
+      setReprintMsg(
+        result.ok
+          ? {
+              id: t.id,
+              ok: true,
+              text: `Reprinted ${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"}.`,
+            }
+          : { id: t.id, ok: false, text: `Did not print: ${result.error}` }
+      );
+    } catch (e: any) {
+      setReprintMsg({ id: t.id, ok: false, text: e?.message ?? "Could not reach the server." });
+    } finally {
+      setReprinting(null);
+    }
+  };
+
   // Only the newest request may write to state: changing a filter mid-flight
   // would otherwise let a slower earlier response overwrite the new results.
   const requestId = useRef(0);
@@ -227,6 +301,7 @@ const Transactions = () => {
 
   useEffect(() => {
     setExpanded(null);
+    setReprintMsg(null);
     load(1);
   }, [load]);
 
@@ -391,10 +466,18 @@ const Transactions = () => {
               {items.map((t) => {
                 const open = expanded === t.id;
                 const methodKey = (t.payment_method ?? "").toLowerCase();
+                // A sale whose every ticket has been refunded or rebooked away
+                // has no boarding document left to hand over.
+                const canReprint = t.tickets.some((tk) => LIVE_TICKET.has(tk.status));
+                const printing = reprinting === t.id;
+                const msg = reprintMsg?.id === t.id ? reprintMsg : null;
                 return (
                   <View key={t.id} style={[styles.row, { borderColor: theme.border }]}>
                     <Pressable
-                      onPress={() => setExpanded(open ? null : t.id)}
+                      onPress={() => {
+                        setExpanded(open ? null : t.id);
+                        setReprintMsg(null);
+                      }}
                       style={styles.rowHead}
                     >
                       <View style={{ flex: 1, gap: 2 }}>
@@ -502,21 +585,64 @@ const Transactions = () => {
                           </View>
                         ))}
 
-                        {/* Refunding and rebooking live in one place — this
-                            hands the reference over rather than repeating it. */}
-                        <Pressable
-                          onPress={() =>
-                            router.push({
-                              pathname: "/(tabs)/refund-rebook",
-                              params: { ref: t.booking_reference },
-                            } as any)
-                          }
-                          style={[styles.actionBtn, { borderColor: theme.tint }]}
-                        >
-                          <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>
-                            Open in Refund &amp; Rebooking
+                        <View style={styles.actionRow}>
+                          {/* Refunding and rebooking live in one place — this
+                              hands the reference over rather than repeating it. */}
+                          <Pressable
+                            onPress={() =>
+                              router.push({
+                                pathname: "/(tabs)/refund-rebook",
+                                params: { ref: t.booking_reference },
+                              } as any)
+                            }
+                            style={[styles.actionBtn, { borderColor: theme.tint }]}
+                          >
+                            <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>
+                              Open in Refund &amp; Rebooking
+                            </Text>
+                          </Pressable>
+
+                          {canReprint && (
+                            <Pressable
+                              onPress={() => reprint(t)}
+                              disabled={printing}
+                              style={[
+                                styles.actionBtn,
+                                styles.actionBtnIcon,
+                                { borderColor: theme.tint, opacity: printing ? 0.6 : 1 },
+                              ]}
+                            >
+                              {printing ? (
+                                <ActivityIndicator size="small" color={theme.tint} />
+                              ) : (
+                                <FontAwesome name="print" size={12} color={theme.tint} />
+                              )}
+                              <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>
+                                {printing ? "Printing…" : "Reprint tickets"}
+                              </Text>
+                            </Pressable>
+                          )}
+
+                          {/* Offered only when the printer is the thing in the
+                              way, so the row stays about the sale otherwise. */}
+                          {((canReprint && !printerSettings.enabled) || (msg && !msg.ok)) && (
+                            <Pressable
+                              onPress={() => setPrinterOpen(true)}
+                              style={[styles.actionBtn, styles.actionBtnIcon, { borderColor: theme.border }]}
+                            >
+                              <FontAwesome name="cog" size={12} color={theme.greyText} />
+                              <Text style={{ color: theme.greyText, fontSize: 12, fontWeight: "700" }}>
+                                Printer setup
+                              </Text>
+                            </Pressable>
+                          )}
+                        </View>
+
+                        {msg && (
+                          <Text style={{ color: msg.ok ? "#2e9e5b" : "#e5484d", fontSize: 12 }}>
+                            {msg.text}
                           </Text>
-                        </Pressable>
+                        )}
                       </View>
                     )}
                   </View>
@@ -544,6 +670,12 @@ const Transactions = () => {
 
         <View style={{ height: 50 }} />
       </ScrollView>
+
+      <PrinterSetupModal
+        visible={printerOpen}
+        onClose={() => setPrinterOpen(false)}
+        onSaved={setPrinterSettings}
+      />
     </Background>
   );
 };
@@ -604,6 +736,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     alignSelf: "flex-start",
   },
+  actionRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" },
   actionBtn: {
     borderWidth: 1.5,
     borderRadius: 8,
@@ -611,6 +744,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     alignSelf: "flex-start",
   },
+  actionBtnIcon: { flexDirection: "row", alignItems: "center", gap: 8 },
   loadMore: {
     marginTop: 14,
     borderWidth: 1,

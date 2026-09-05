@@ -309,3 +309,83 @@ export function attachServerTickets(
     qrToken: (rows[i]?.qr_token ?? "").toString(),
   }));
 }
+
+// ── Reprint ─────────────────────────────────────────────────────────────────
+
+/** One live ticket as POST /office/bookings/{ref}/reprint returns it. */
+export interface ReprintTicket {
+  ticket_number: string | null;
+  qr_token: string | null;
+  vessel: string | null;
+  origin: string | null;
+  origin_code: string | null;
+  destination: string | null;
+  destination_code: string | null;
+  /** Naive Asia/Manila wall clock, already split by the server so no client
+   *  timezone can shift the printed departure. */
+  depart_date: string | null;
+  depart_time: string | null;
+  accommodation_class: string | null;
+  seat_number: string | null;
+  passenger_first_name: string | null;
+  passenger_middle_name: string | null;
+  passenger_last_name: string | null;
+  passenger_birthdate: string | null;
+  passenger_gender: string | null;
+  passenger_nationality: string | null;
+  price: number;
+  currency: string;
+}
+
+/** A past sale, ready to print again. */
+export interface ReprintBooking {
+  booking_reference: string;
+  /** The ORIGINAL sale's issuing counter, agent and date — a reprint is a copy
+   *  of that invoice, not a new one from whoever is standing at the till. */
+  ticket_station: string;
+  issued_by: string;
+  issued_date: string | null;
+  trip_kind: string;
+  tickets: ReprintTicket[];
+}
+
+/**
+ * Rebuild the printable tickets for a sale that is no longer on screen.
+ *
+ * The booking screen prints from the forms it captured; a reprint has only what
+ * Postgres kept, so this is the same assembly fed from the server's row instead
+ * of the cashier's typing. Serials and boarding tokens come from the row rather
+ * than being left blank — these tickets already exist, so nothing is issued.
+ */
+export function buildReprintTickets(booking: ReprintBooking): TicketData[] {
+  const built = booking.tickets.map((t) =>
+    buildTicketData(
+      {
+        vessel: t.vessel ?? "",
+        origin: t.origin ?? "",
+        destination: t.destination ?? "",
+        originCode: t.origin_code ?? "",
+        destinationCode: t.destination_code ?? "",
+        departDateISO: t.depart_date ?? "",
+        departTime: t.depart_time,
+        accommodation: t.accommodation_class ?? "",
+        tripKind: booking.trip_kind,
+        ticketStation: booking.ticket_station,
+        issuedBy: booking.issued_by,
+        issuedDateISO: booking.issued_date ?? "",
+      },
+      {
+        firstName: t.passenger_first_name ?? "",
+        middleInitial: t.passenger_middle_name ?? "",
+        lastName: t.passenger_last_name ?? "",
+        birthdate: t.passenger_birthdate ?? "",
+        sex: t.passenger_gender ?? "",
+        nationality: t.passenger_nationality ?? "",
+        fare: t.price,
+        currency: t.currency,
+        seat: t.seat_number,
+      }
+    )
+  );
+  return attachServerTickets(built, booking.tickets);
+}
