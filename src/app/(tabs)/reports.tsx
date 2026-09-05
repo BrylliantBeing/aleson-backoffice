@@ -1,6 +1,5 @@
 import Background from "@/components/Background";
 import CustomCalendar from "@/components/CustomCalendar";
-import PrinterSetupModal from "@/components/PrinterSetupModal";
 import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { useAuth } from "@/context/AuthContext";
@@ -13,13 +12,8 @@ import {
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
 import { printManifest } from "@/utils/manifestDoc";
-import {
-  DEFAULT_SETTINGS,
-  loadPrinterSettings,
-  PrinterSettings,
-  printZReport,
-} from "@/utils/printer";
 import { seatNumberLabel } from "@/utils/seatLabel";
+import { printZReport } from "@/utils/zreportDoc";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useState } from "react";
 import {
@@ -38,13 +32,15 @@ import {
  *
  * "End of day" is the cashier's own Z-report for a till shift: what they took,
  * broken down by tender and currency, reconciled against the drawer they
- * counted, and printed on the till roll beside the cash it accounts for. The
- * shift is the period rather than the calendar day because that is the window
- * the drawer agrees with.
+ * counted. The shift is the period rather than the calendar day because that
+ * is the window the drawer agrees with.
  *
- * "Passenger manifest" is the sailing's passenger list, printed A4 through the
- * browser for the vessel and the port — too wide a table for 80mm roll, and it
- * leaves the building, so it is a document rather than a receipt.
+ * "Passenger manifest" is the sailing's passenger list, for the vessel and the
+ * port.
+ *
+ * Both print A4 through the browser. Each is a grid that gets signed and filed
+ * — the report with the day's cash, the manifest with the sailing — and neither
+ * survives being folded into 80mm of till roll.
  */
 
 type Section = "eod" | "manifest";
@@ -99,13 +95,6 @@ const Reports = () => {
 
   const [section, setSection] = useState<Section>("eod");
 
-  const [printerSettings, setPrinterSettings] =
-    useState<PrinterSettings>(DEFAULT_SETTINGS);
-  const [printerOpen, setPrinterOpen] = useState(false);
-  useEffect(() => {
-    loadPrinterSettings().then(setPrinterSettings);
-  }, []);
-
   // ── End of day ────────────────────────────────────────────────────────────
   const [report, setReport] = useState<ZReport | null>(null);
   const [reportLoading, setReportLoading] = useState(true);
@@ -114,7 +103,6 @@ const Reports = () => {
   // null = "whichever shift the server picks": the open one, else the last
   // closed one. That is what a cashier wants either side of counting the till.
   const [shiftId, setShiftId] = useState<number | null>(null);
-  const [printing, setPrinting] = useState(false);
   const [printMsg, setPrintMsg] =
     useState<{ ok: boolean; text: string } | null>(null);
 
@@ -150,24 +138,15 @@ const Reports = () => {
       .catch(() => setShifts([]));
   }, []);
 
-  const printReport = async () => {
+  const printReport = () => {
     if (!report) return;
-    if (!printerSettings.enabled) {
-      setPrintMsg({
-        ok: false,
-        text: "Printing is switched off on this PC. Turn it on in Printer setup.",
-      });
-      return;
-    }
-    setPrinting(true);
     setPrintMsg(null);
-    const result = await printZReport(report, printerSettings);
+    const result = printZReport(report);
     setPrintMsg(
       result.ok
-        ? { ok: true, text: "Sent to the till printer." }
-        : { ok: false, text: `Did not print: ${result.error}` }
+        ? { ok: true, text: "Opening the print dialog…" }
+        : { ok: false, text: result.error ?? "Could not print." }
     );
-    setPrinting(false);
   };
 
   // ── Manifest ──────────────────────────────────────────────────────────────
@@ -382,30 +361,20 @@ const Reports = () => {
                   <View style={styles.actionRow}>
                     <Pressable
                       onPress={printReport}
-                      disabled={printing}
-                      style={[
-                        styles.button,
-                        { backgroundColor: theme.tint, opacity: printing ? 0.6 : 1 },
-                      ]}
+                      style={[styles.button, { backgroundColor: theme.tint }]}
                     >
-                      {printing ? (
-                        <ActivityIndicator color="#fff" />
-                      ) : (
-                        <View style={styles.buttonInner}>
-                          <FontAwesome name="print" size={15} color="#fff" />
-                          <Text style={styles.buttonText}>Print report</Text>
-                        </View>
-                      )}
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setPrinterOpen(true)}
-                      style={[styles.ghostButton, { borderColor: theme.border }]}
-                    >
-                      <Text style={{ color: theme.tint, fontWeight: "700", fontSize: 13 }}>
-                        Printer setup
-                      </Text>
+                      <View style={styles.buttonInner}>
+                        <FontAwesome name="print" size={15} color="#fff" />
+                        <Text style={styles.buttonText}>Print report (A4)</Text>
+                      </View>
                     </Pressable>
                   </View>
+                  {Platform.OS !== "web" && (
+                    <Text style={{ color: theme.greyText, fontSize: 12.5, marginTop: 8 }}>
+                      The report prints from the browser at the counter — the figures
+                      below are the full record on this device.
+                    </Text>
+                  )}
                   {message(printMsg)}
                 </WholeCard>
 
@@ -797,11 +766,6 @@ const Reports = () => {
         <View style={{ height: 50 }} />
       </ScrollView>
 
-      <PrinterSetupModal
-        visible={printerOpen}
-        onClose={() => setPrinterOpen(false)}
-        onSaved={setPrinterSettings}
-      />
     </Background>
   );
 };
@@ -860,12 +824,6 @@ const styles = StyleSheet.create({
   },
   buttonInner: { flexDirection: "row", alignItems: "center", gap: 8 },
   buttonText: { color: "#fff", fontFamily: "Lato", fontWeight: "700" },
-  ghostButton: {
-    borderWidth: 1.5,
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-  },
   row: { borderWidth: 1, borderRadius: 12, padding: 12 },
   tender: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, gap: 3 },
   tripOption: {
