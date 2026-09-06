@@ -7,7 +7,8 @@ export type Category =
   | "military"
   | "student"
   | "senior"
-  | "infant";
+  | "infant"
+  | "freepass";
 
 // UI slug → DB-canonical passenger_type stored on fares/tickets.
 export const CATEGORY_TO_DB: Record<Category, string> = {
@@ -17,7 +18,20 @@ export const CATEGORY_TO_DB: Record<Category, string> = {
   student: "Student",
   military: "Military",
   infant: "Infant",
+  freepass: "Free Pass",
 };
+
+/**
+ * The escort travelling free with a RO/RO cargo shipment — the truck's driver
+ * or helper. Unlike every other category it has no row in `fares`: it is an
+ * entitlement the counter grants against the shipper's paperwork, not a price
+ * anyone can buy, and giving it a fare row would put a free ticket on the
+ * public booking site (which builds its ticket types out of that table).
+ *
+ * So it is free by definition here, not by lookup, and a sale carrying one
+ * always records the cargo reference it was issued against.
+ */
+export const FREE_PASS: Category = "freepass";
 
 export interface CategoryMeta {
   key: Category;
@@ -34,6 +48,11 @@ export const CATEGORIES: CategoryMeta[] = [
   { key: "military", label: "Military", color: "#5a6b7b", seatOccupying: true },
   { key: "minor", label: "Minor", color: "#8b5cf6", seatOccupying: true },
   { key: "infant", label: "Infant", color: "#ec4899", seatOccupying: false },
+  // Last in the list because it is the rarest sale on the counter, and brown
+  // because none of the six above it are: the colour bar down a passenger row
+  // is there to stop a cashier reading one category as another, and a free ride
+  // is the one that costs the operator money when it is entered by mistake.
+  { key: "freepass", label: "Free Pass", color: "#8a5a2b", seatOccupying: true },
 ];
 
 export const CATEGORY_META: Record<Category, CategoryMeta> = CATEGORIES.reduce(
@@ -61,7 +80,8 @@ export function ageOn(birthdate: string, on: Date = new Date()): number {
 /**
  * Validate that a passenger's DOB matches the category they were placed in.
  * Returns an error string, or null when valid.
- *   infant 0–1 · minor 2–11 · senior ≥60 · regular/student/military: no DOB gate.
+ *   infant 0–1 · minor 2–11 · senior ≥60 · regular/student/military/free pass:
+ *   no DOB gate.
  */
 export function validateDob(
   category: Category,
@@ -78,7 +98,7 @@ export function validateDob(
     case "senior":
       return age >= 60 ? null : "Senior must be 60 years or older.";
     default:
-      return null; // regular / student / military
+      return null; // regular / student / military / free pass
   }
 }
 
@@ -88,6 +108,10 @@ export function validateDob(
  * against anything — mirrors the same rule on the public booking site.
  */
 export const MIN_NAME_LENGTH = 2;
+
+/** Longest cargo reference the counter may key — mirrors CARGO_REFERENCE_MAX
+ *  in the backend, which is the width of the column it is stored in. */
+export const CARGO_REFERENCE_MAX = 64;
 
 /** Returns an error string for a too-short name, or null when it's usable. */
 export function validateName(raw: string, label: string): string | null {

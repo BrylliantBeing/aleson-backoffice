@@ -117,6 +117,10 @@ const METHODS = [
   { key: "cash", label: "Cash" },
   { key: "card", label: "Card" },
   { key: "qr", label: "QR" },
+  // Not a tender — no money was taken — but it is filterable for the same
+  // reason it gets its own line on the Z-report: "what did this counter give
+  // away this week" is a question a supervisor asks, and nothing else answers it.
+  { key: "free_pass", label: "Free pass" },
 ] as const;
 
 const STATUS_COLOR: Record<string, string> = {
@@ -138,6 +142,7 @@ const METHOD_ICON: Record<string, keyof typeof FontAwesome.glyphMap> = {
   cash: "money",
   card: "credit-card",
   qr: "qrcode",
+  free_pass: "truck",
 };
 
 const formatWhen = (isoStr: string | null) => {

@@ -9,7 +9,7 @@
  * currency conventions, which are independent of any printer.
  */
 
-import { ageOn } from "@/utils/passengerRules";
+import { ageOn, CATEGORY_TO_DB } from "@/utils/passengerRules";
 import { seatNumberLabel } from "@/utils/seatLabel";
 
 /** One printed passage ticket. Values are already formatted for the paper. */
@@ -39,6 +39,15 @@ export interface TicketData {
   /** Unformatted, so the VAT split can be computed at render time. */
   fareAmount: number;
   currency: string;
+  /**
+   * A RO/RO cargo escort's ticket. Carried as its own flag rather than being
+   * inferred from a zero fare: an infant on a lap is also zero, and the two are
+   * not the same document. This one has to say on its face that it was issued
+   * against cargo, or a free ride is indistinguishable from a mispriced sale.
+   */
+  freePass: boolean;
+  /** The cargo document the free pass was issued against. Empty otherwise. */
+  cargoReference: string;
 }
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
@@ -242,6 +251,10 @@ export interface TicketPassenger {
   currency?: string | null;
   /** Empty for a passenger who occupies no seat (a lap infant). */
   seat?: string | null;
+  /** Travelling free with a RO/RO cargo shipment. */
+  freePass?: boolean;
+  /** The plate number or bill of lading a free pass was issued against. */
+  cargoReference?: string | null;
 }
 
 /**
@@ -280,6 +293,8 @@ export function buildTicketData(
     amountInWords: amountInWords(pax.fare, currency),
     fareAmount: pax.fare,
     currency,
+    freePass: !!pax.freePass,
+    cargoReference: (pax.cargoReference || "").trim().toUpperCase(),
   };
 }
 
@@ -333,6 +348,10 @@ export interface ReprintTicket {
   passenger_birthdate: string | null;
   passenger_gender: string | null;
   passenger_nationality: string | null;
+  /** DB-canonical type ("Adult", "Free Pass", …) — the reprint's only way to
+   *  tell a cargo escort's ticket from a fare that happens to be zero. */
+  passenger_type: string | null;
+  cargo_reference: string | null;
   price: number;
   currency: string;
 }
@@ -384,6 +403,8 @@ export function buildReprintTickets(booking: ReprintBooking): TicketData[] {
         fare: t.price,
         currency: t.currency,
         seat: t.seat_number,
+        freePass: t.passenger_type === CATEGORY_TO_DB.freepass,
+        cargoReference: t.cargo_reference,
       }
     )
   );

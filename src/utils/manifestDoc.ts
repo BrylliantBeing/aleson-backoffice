@@ -137,6 +137,19 @@ export function manifestHtml(manifest: Manifest): string {
   const genderSummary = manifest.by_gender
     .map((g) => `${esc(g.gender)} <b>${g.passengers}</b>`)
     .join(" &nbsp;·&nbsp; ");
+  // Free passes are named individually rather than merely counted, and they are
+  // listed here rather than given a column: the passenger table's widths are
+  // declared and must sum to 100, and a twelfth column would squeeze every row
+  // on every sailing for something almost none of them carry. The line is the
+  // only place the printed manifest ties a free ride to the shipment that
+  // earned it — the pair is what a supervisor checks against the RO/RO
+  // paperwork, so both halves have to be on the paper.
+  const freePasses = manifest.passengers.filter((p) => p.cargo_reference);
+  const freePassSummary = freePasses.length
+    ? `<br>Free passes (RO/RO cargo): <b>${freePasses.length}</b> &nbsp;·&nbsp; ${freePasses
+        .map((p) => `${esc(p.passenger_name)} (${esc(p.cargo_reference ?? "")})`)
+        .join(" &nbsp;·&nbsp; ")}`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -278,7 +291,7 @@ export function manifestHtml(manifest: Manifest): string {
     <span class="total">TOTAL PASSENGERS: ${manifest.total}</span>
     &nbsp;&nbsp;(minors under 18: <b>${manifest.minors}</b>)<br>
     By class: ${classSummary || dash}<br>
-    By sex: ${genderSummary || dash}${
+    By sex: ${genderSummary || dash}${freePassSummary}${
       showBoarded
         ? `<br>Boarded at gate: <b>${manifest.boarded}</b> of ${manifest.total}` +
           ` &nbsp;·&nbsp; not scanned: <b>${manifest.total - manifest.boarded}</b>`

@@ -189,6 +189,10 @@ export interface ManifestPassenger {
   /** Phone (preferred) or email, held per booking — everyone travelling on one
    *  reference shares it. Null when the sale captured neither. */
   contact: string | null;
+  /** Set only on a free pass: the RO/RO cargo document the free ride was issued
+   *  against, so the manifest can be checked against the shipper's paperwork at
+   *  the pier. Null on every paying passenger. */
+  cargo_reference: string | null;
 }
 
 export interface Manifest {
@@ -206,6 +210,8 @@ export interface Manifest {
   total: number;
   boarded: number;
   minors: number;
+  /** How many aboard are travelling free with RO/RO cargo. */
+  free_passes: number;
   by_class: { accommodation_class: string; passengers: number }[];
   by_gender: { gender: string; passengers: number }[];
   passengers: ManifestPassenger[];

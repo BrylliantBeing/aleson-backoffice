@@ -110,6 +110,12 @@ export function renderTicket(data: TicketData, options: TicketDocOptions = {}): 
       W
     )
   );
+  // Why this passenger paid nothing, and against what. A zero fare on its own
+  // reads as an error to anyone checking the ticket — and to the passenger.
+  if (data.freePass) {
+    w.line(pair("TYPE", "FREE PASS (RO/RO CARGO)", W));
+    if (data.cargoReference) w.line(pair("CARGO REF", data.cargoReference, W));
+  }
   w.line(rule(W));
 
   // ── Money ─────────────────────────────────────────────────────────────────
@@ -121,7 +127,9 @@ export function renderTicket(data: TicketData, options: TicketDocOptions = {}): 
   w.line(pair("  VAT-Exempt Sales", amt(vat.vatExempt), FONT_B_COLS, "."));
   w.line(pair("  VAT Zero-Rated Sales", amt(vat.zeroRated), FONT_B_COLS, "."));
   w.font("A");
-  w.bold(true).line(pair("TOTAL AMOUNT DUE", data.fare, W)).bold(false);
+  w.bold(true)
+    .line(pair(data.freePass ? "NO CHARGE" : "TOTAL AMOUNT DUE", data.fare, W))
+    .bold(false);
   w.font("B");
   for (const l of wrap(data.amountInWords, FONT_B_COLS)) w.line(l);
   w.font("A");
@@ -152,6 +160,10 @@ export function renderTicket(data: TicketData, options: TicketDocOptions = {}): 
   for (const l of wrap(o.terms, FONT_B_COLS)) w.line(l);
   w.font("A");
   w.align("center").line("GOOD FOR ONE PASSENGER");
+  // The line that makes the ticket refusable if it turns up detached from its
+  // shipment: a free pass is part of a cargo package, not something that was
+  // bought, so it is not anyone's to pass on or sell.
+  if (data.freePass) w.font("B").line("NOT FOR SALE - ISSUED WITH RO/RO CARGO").font("A");
   w.align("left");
 
   w.feed(3).cut();
@@ -194,5 +206,7 @@ export function sampleTicket(): TicketData {
     amountInWords: "ONE THOUSAND EIGHT HUNDRED PESOS ONLY",
     fareAmount: 1800,
     currency: "PHP",
+    freePass: false,
+    cargoReference: "",
   };
 }

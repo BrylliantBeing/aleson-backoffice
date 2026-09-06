@@ -17,10 +17,12 @@ import { useElementWidth } from "@/hooks/useElementWidth";
 import { useLayout } from "@/hooks/useLayout";
 import { API_BASE, apiFetch } from "@/utils/api";
 import {
+  CARGO_REFERENCE_MAX,
   Category,
   CATEGORIES,
   CATEGORY_META,
   CATEGORY_TO_DB,
+  FREE_PASS,
   SEAT_OCCUPYING,
   validateDob,
   validateName,
@@ -81,6 +83,10 @@ interface PassengerRow {
   // per booking: the backend evaluates it per occupant, and consent given by
   // one traveller cannot stand in for another's.
   mixed_ok: boolean;
+  // Free passes only: the cargo document this free ride was granted against —
+  // the plate number or bill of lading on the shipper's paperwork. Per
+  // passenger rather than per sale, because one party can escort two vehicles.
+  cargo_reference: string;
 }
 
 const emptyCounts = (): Record<Category, number> =>
@@ -101,6 +107,9 @@ const legFare = (
   cls.ticket_type.forEach((t) => (priceByType[t.type] = t.price));
   let sum = 0;
   for (const c of CATEGORIES) {
+    // A free pass is free by definition, not by lookup — it deliberately has no
+    // row in `fares` (see FREE_PASS), so there is nothing here to add.
+    if (c.key === FREE_PASS) continue;
     const n = counts[c.key] || 0;
     if (n > 0) sum += (priceByType[c.key] ?? 0) * n;
   }
@@ -113,6 +122,7 @@ const paxFare = (
   className: string,
   category: Category
 ): number => {
+  if (category === FREE_PASS) return 0;
   if (!v || !className) return 0;
   return v.class_name?.[className]?.ticket_type.find((t) => t.type === category)?.price ?? 0;
 };
@@ -129,6 +139,10 @@ const legCurrency = (v: Voyage | undefined, className: string): string | null =>
  *  the panel clears ~1060px; below ~520 even two lines are too tight and the
  *  row stacks. Both are the panel's outer width, padding included. */
 const PAX_ROW_MIN = 1060;
+/** Same nine columns plus the cargo reference a free pass carries. Only applies
+ *  while a free pass is in the party — an ordinary sale keeps the old width and
+ *  the old tier, so nothing about the common case changes. */
+const PAX_ROW_CARGO_MIN = 1180;
 const PAX_WRAP_MIN = 520;
 
 /** Panel width below which the category steppers drop from two per line to
@@ -303,6 +317,7 @@ const BookingOffice = () => {
               id_type: "",
               id_number: "",
               mixed_ok: false,
+              cargo_reference: "",
             }
           );
         }
@@ -526,12 +541,154 @@ const BookingOffice = () => {
     return map;
   }, [passengers, depSeats, retSeats]);
 
+  // --- Seat holds ----------------------------------------------------------
+  // The counter used to hold nothing. While a cashier entered passenger details
+  // and counted out cash, the website could send somebody to a payment page for
+  // the same berth; whoever confirmed second was refused at the till, with the
+  // money already on the counter. The website has claimed a per-seat hold from
+  // its picker all along, so the counter now does the same and the two compete
+  // for inventory on equal terms instead of the counter always finding out last.
+  //
+  // A ref, not state: nothing renders from it, and it must survive the
+  // re-render that every seat change causes without restarting the effect.
+  const holdIdRef = useRef<string | null>(null);
+  // Joined rather than passed as arrays — a fresh array identity on every
+  // render would re-claim the hold in a loop.
+  const depSeatKey = depSeats.join(",");
+  const retSeatKey = retSeats.join(",");
+
+  const releaseHold = React.useCallback(() => {
+    const id = holdIdRef.current;
+    if (!id) return;
+    holdIdRef.current = null;
+    // Best-effort: an abandoned cart should not sit on inventory for the full
+    // TTL, but a failed release is not worth showing the cashier.
+    apiFetch(`/api/v1/seat-holds/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(
+      () => {}
+    );
+  }, []);
+
+  useEffect(() => {
+    const legs: any[] = [];
+    // seat_meta carries gender + consent so a held berth can still drive the
+    // single-gender cabin rule before it has a ticket to read them from.
+    const metaFor = (which: "dep" | "ret") => {
+      const meta: Record<string, { gender: string | null; mixed_ok: boolean }> = {};
+      for (const p of passengers) {
+        const seat = seatByPassenger[p.id]?.[which];
+        if (seat) meta[seat] = { gender: p.sex || null, mixed_ok: !!p.mixed_ok };
+      }
+      return meta;
+    };
+    if (depVoyageId && depDate && depSeats.length) {
+      legs.push({
+        schedule_id: depVoyageId,
+        date: depDate,
+        class_name: depClass,
+        seats: depSeats,
+        seat_meta: metaFor("dep"),
+      });
+    }
+    if (tripType === "round-trip" && retVoyageId && retDate && retSeats.length) {
+      legs.push({
+        schedule_id: retVoyageId,
+        date: retDate,
+        class_name: retClass,
+        seats: retSeats,
+        seat_meta: metaFor("ret"),
+      });
+    }
+    if (!legs.length) return;
+
+    let cancelled = false;
+    // Debounced: the counter auto-assigns a whole party at once and the cashier
+    // may then override individual berths, so this settles rather than firing
+    // per keystroke.
+    const timer = setTimeout(async () => {
+      try {
+        const res = await apiFetch("/api/v1/seat-holds", {
+          method: "POST",
+          body: JSON.stringify({ hold_id: holdIdRef.current, legs }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok && data?.hold_id) {
+          holdIdRef.current = data.hold_id;
+        } else if (res.status === 409) {
+          // Somebody else is buying one of these berths right now. Say so here,
+          // at the seat step, rather than letting the cashier discover it after
+          // taking the money.
+          setErrorMsg(
+            typeof data?.detail === "string"
+              ? data.detail
+              : data?.detail?.message ||
+                  "Someone else is booking one of these seats. Please pick another."
+          );
+        }
+      } catch {
+        // Offline or the API is down: the sale is refused at /office/payment
+        // anyway, so there is nothing useful to say at this point.
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    depVoyageId, depDate, depClass, depSeatKey,
+    retVoyageId, retDate, retClass, retSeatKey,
+    tripType,
+  ]);
+
+  // Heartbeat. The hold's TTL is minutes and a counter sale can easily take
+  // longer than that, so keep it alive for as long as this cart is open.
+  useEffect(() => {
+    const beat = setInterval(() => {
+      const id = holdIdRef.current;
+      if (!id) return;
+      apiFetch("/api/v1/seat-holds/renew", {
+        method: "POST",
+        body: JSON.stringify({ hold_id: id }),
+      }).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(beat);
+  }, []);
+
+  // Give the berths back if the cashier walks away from the screen entirely.
+  useEffect(() => releaseHold, [releaseHold]);
+
+  // --- One click, one sale --------------------------------------------------
+  // /office/payment settles cash on the spot, so a response lost on the way
+  // back left the cashier looking at "Could not reach the server" for a sale
+  // that had gone through — and clicking again booked the party twice. The key
+  // is generated once per cart and resent unchanged, so the server can tell a
+  // retry from a second sale. Cleared only when the cart is.
+  const idemKeyRef = useRef<string | null>(null);
+  const idempotencyKey = () => {
+    if (!idemKeyRef.current) {
+      idemKeyRef.current =
+        globalThis.crypto?.randomUUID?.().replace(/-/g, "") ??
+        `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+    }
+    return idemKeyRef.current;
+  };
+
   const dobErrors = passengers.map((p) => validateDob(p.category, p.birthdate));
   // Names are matched against the ID at the gate, so a lone initial isn't enough.
   const nameErrors = passengers.map((p) => ({
     first: validateName(p.first_name, "First name"),
     last: validateName(p.last_name, "Last name"),
   }));
+
+  // A RO/RO cargo escort can ride beside paying passengers, or be the whole
+  // sale. The second is a different transaction and not merely a cheaper one:
+  // there is no money to take, so it goes to its own endpoint rather than
+  // through a payment rail (see handleConfirm), and the payment half of this
+  // screen has nothing to ask for.
+  const hasFreePass = passengers.some((p) => p.category === FREE_PASS);
+  const freePassOnly =
+    passengers.length > 0 && passengers.every((p) => p.category === FREE_PASS);
 
   // Contact-person picker: label each passenger like its detail row ("Regular 1").
   const contactBound = contactPaxId != null;
@@ -585,14 +742,25 @@ const BookingOffice = () => {
   // Picking a different contact person is still there for the sale that needs
   // it; it is just no longer on the path of the sale that doesn't.
   const phoneRef = useRef<TextInput | null>(null);
-  const skipToPhone = (i: number) => (e: any) => {
-    if (i !== passengers.length - 1) return;
+  const tabToPhone = (e: any) => {
     const key = e?.nativeEvent?.key ?? e?.key;
     // Shift+Tab still walks back up the row it came from.
     const shifted = e?.nativeEvent?.shiftKey ?? e?.shiftKey;
     if (key !== "Tab" || shifted) return;
     e?.preventDefault?.();
     phoneRef.current?.focus();
+  };
+  // Which field ends the last row depends on the row: a free pass carries one
+  // more after the ID number, and jumping to the phone box from the ID would
+  // tab straight past the cargo reference the sale cannot go through without.
+  const skipToPhone = (i: number) => (e: any) => {
+    if (i !== passengers.length - 1) return;
+    if (passengers[i]?.category === FREE_PASS) return;
+    tabToPhone(e);
+  };
+  const skipFromCargo = (i: number) => (e: any) => {
+    if (i !== passengers.length - 1) return;
+    tabToPhone(e);
   };
 
   // Validation gate for submission.
@@ -639,6 +807,12 @@ const BookingOffice = () => {
     const hasIdNumber = !!p.id_number.trim();
     if (!hasIdType && (!idOptional || hasIdNumber)) missing.push("ID type");
     if (!hasIdNumber && (!idOptional || hasIdType)) missing.push("ID number");
+    // The whole audit trail for a free ride. Nothing else on the row records
+    // which shipment it belonged to, and there is no cargo module to look it up
+    // in later — if it is not keyed here it is gone.
+    if (p.category === FREE_PASS && !p.cargo_reference.trim()) {
+      missing.push("cargo reference");
+    }
     return missing;
   };
 
@@ -676,18 +850,23 @@ const BookingOffice = () => {
   }
   if (!contactLast.trim()) confirmBlockers.push("Enter the contact person's last name.");
   if (phoneError) confirmBlockers.push(`Contact phone: ${phoneError}`);
-  if (!method) {
-    confirmBlockers.push("Choose a payment method.");
-  } else if (!cashOk) {
-    confirmBlockers.push(
-      `Cash tendered (${money(tenderedNum, currency)}) is less than the total ${money(
-        total,
-        currency
-      )}.`
-    );
-  }
-  if (revealed && total <= 0) {
-    confirmBlockers.push("This sale totals zero — check the fares for the selected class.");
+  // A free-pass-only sale charges nothing, so there is no tender to choose and
+  // no drawer to reconcile — and a zero total is the expected outcome rather
+  // than the symptom of a missing fare it would be on any other sale.
+  if (!freePassOnly) {
+    if (!method) {
+      confirmBlockers.push("Choose a payment method.");
+    } else if (!cashOk) {
+      confirmBlockers.push(
+        `Cash tendered (${money(tenderedNum, currency)}) is less than the total ${money(
+          total,
+          currency
+        )}.`
+      );
+    }
+    if (revealed && total <= 0) {
+      confirmBlockers.push("This sale totals zero — check the fares for the selected class.");
+    }
   }
   if (mixedCurrency) {
     confirmBlockers.push(
@@ -719,6 +898,10 @@ const BookingOffice = () => {
         id_type: p.id_type.trim() || null,
         id_number: p.id_number.trim() || null,
         passenger_type: CATEGORY_TO_DB[p.category],
+        // Only a free pass carries one, and the server refuses the sale if it
+        // is blank — so this is the last point at which it can be lost.
+        cargo_reference:
+          p.category === FREE_PASS ? p.cargo_reference.trim() : null,
         mixed_ok: p.mixed_ok,
         departure_seat: depSeat,
         return_seat: retSeat,
@@ -756,6 +939,11 @@ const BookingOffice = () => {
       departure,
       return_trip,
       passengers: pax,
+      // The hold these berths were claimed under, so the server extends it for
+      // the payment rather than minting a second one and colliding with our own
+      // claim. Null before the hold lands (or if Valkey is down); the server
+      // mints one in that case, exactly as it did before the counter held.
+      hold_id: holdIdRef.current,
       // Neither the station nor the serial is sent: the server takes the station
       // from the selling agent's account and assigns serials from that counter's
       // sequence, so a client can neither pick its own numbers nor collide with
@@ -838,6 +1026,12 @@ const BookingOffice = () => {
               fare: paxFare(leg.voyage, leg.className, p.category),
               currency: legCurrency(leg.voyage, leg.className) ?? currency,
               seat,
+              // A zero fare alone would print as an ordinary ticket that
+              // happens to cost nothing — which is what a lap infant is. The
+              // paper has to say which of the two this is, and what shipment
+              // it was issued against, or the gate cannot tell them apart.
+              freePass: p.category === FREE_PASS,
+              cargoReference: p.cargo_reference.trim(),
             }
           )
         );
@@ -907,27 +1101,43 @@ const BookingOffice = () => {
     // it settles minutes later, long after the cashier has moved on.
     lastTickets.current = buildTickets();
     try {
-      const res = await apiFetch("/api/v1/office/payment", {
-        method: "POST",
-        body: JSON.stringify({
-          amount: total,
-          method,
-          tendered: method === "cash" ? tenderedNum : null,
-          booking: buildBooking(),
-        }),
-      });
+      // Nothing to charge means no payment rail at all: every one of them
+      // refuses an amount of zero on purpose, so a sale that is only free
+      // passes is issued through its own counter-authenticated endpoint.
+      const res = await apiFetch(
+        freePassOnly ? "/api/v1/office/free-pass" : "/api/v1/office/payment",
+        {
+          method: "POST",
+          body: JSON.stringify(
+            freePassOnly
+              ? { booking: buildBooking(), idempotency_key: idempotencyKey() }
+              : {
+                  amount: total,
+                  method,
+                  tendered: method === "cash" ? tenderedNum : null,
+                  booking: buildBooking(),
+                  idempotency_key: idempotencyKey(),
+                }
+          ),
+        }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setErrorMsg(data?.detail || "Payment failed. Please try again.");
+        setErrorMsg(
+          data?.detail ||
+            (freePassOnly
+              ? "Could not issue the free pass. Please try again."
+              : "Payment failed. Please try again.")
+        );
         return;
       }
-      if (method === "qr") {
+      if (!freePassOnly && method === "qr") {
         setQr({ orderId: data.order_id, image: data.qr_image });
       } else {
         completeSale({
           reference: data.booking_reference,
           change: data.change ?? null,
-          method,
+          method: freePassOnly ? "free_pass" : method,
           total,
           currency: data.currency ?? currency,
           ticketNumbers: data.ticket_numbers ?? null,
@@ -955,6 +1165,13 @@ const BookingOffice = () => {
   // so the reload counter is what actually brings the sailings back.
   const resetForNextSale = () => {
     setCounts(emptyCounts());
+    // A completed sale already released its hold server-side (finalize_booking
+    // does it once the tickets exist); this covers the cart being cleared
+    // without a sale, and drops our copy of the id either way.
+    releaseHold();
+    // A new customer is a new sale: carrying the old key over would make the
+    // first confirm replay the previous booking instead of taking this one.
+    idemKeyRef.current = null;
     // Cleared for the instant before the refetch lands, so seats sold by the
     // sale just made are never briefly offered to the next customer.
     setDepVoyages([]);
@@ -995,10 +1212,16 @@ const BookingOffice = () => {
     void printCapturedTickets();
   };
 
+  // A settled free-pass sale reads differently everywhere it is reported: no
+  // money came in, so "Total paid P 0.00" would be a statement about the
+  // drawer that is not true of it.
+  const freePassSale = toast?.method === "free_pass";
   const toastRows: ToastRow[] = toast
     ? [
-        { label: "Total paid", value: money(toast.total, toast.currency) },
-        { label: "Payment", value: toast.method.toUpperCase() },
+        freePassSale
+          ? { label: "Charged", value: "No charge" }
+          : { label: "Total paid", value: money(toast.total, toast.currency) },
+        { label: "Payment", value: freePassSale ? "FREE PASS" : toast.method.toUpperCase() },
         ...(toast.change != null
           ? [{ label: "Change", value: money(toast.change, toast.currency), accent: true }]
           : []),
@@ -1054,7 +1277,7 @@ const BookingOffice = () => {
         : compact
           ? "stack"
           : "wrap"
-      : paxPanelW >= PAX_ROW_MIN
+      : paxPanelW >= (hasFreePass ? PAX_ROW_CARGO_MIN : PAX_ROW_MIN)
         ? "row"
         : paxPanelW >= PAX_WRAP_MIN
           ? "wrap"
@@ -1078,6 +1301,7 @@ const BookingOffice = () => {
           nat: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
           idType: { flexBasis: "46%", flexGrow: 46 } as FlexStyle,
           id: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
+          cargo: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
           mixed: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
         }
       : paxTier === "wrap"
@@ -1091,6 +1315,7 @@ const BookingOffice = () => {
             nat: { flexBasis: "19%", flexGrow: 19 } as FlexStyle,
             idType: { flexBasis: "20%", flexGrow: 20 } as FlexStyle,
             id: { flexBasis: "20%", flexGrow: 20 } as FlexStyle,
+            cargo: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
             mixed: { flexBasis: "100%", flexGrow: 1 } as FlexStyle,
           }
         : null;
@@ -1269,6 +1494,34 @@ const BookingOffice = () => {
               : focusPaxField(i * PAX_FIELDS + 5)
           }
         />
+        {/* Only the free-pass rows carry it, and only while the party has one.
+            Paying rows in a mixed party still get the empty cell on the
+            single-line tier — without it their ID number would sit under the
+            free pass's cargo reference and the columns would stop lining up. */}
+        {hasFreePass &&
+          (p.category === FREE_PASS ? (
+            <TextInput
+              style={[inputStyle, styles.cCargo, paxCell?.cargo]}
+              value={p.cargo_reference}
+              // Read back off the paperwork and matched against it by eye at the
+              // pier, so it is stored the way the paperwork prints it.
+              onChangeText={(v) =>
+                updatePassenger(p.id, {
+                  cargo_reference: v.toUpperCase().slice(0, CARGO_REFERENCE_MAX),
+                })
+              }
+              placeholder="Cargo ref (plate / B/L)"
+              placeholderTextColor={theme.greyText}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              returnKeyType={i === passengers.length - 1 ? "done" : "next"}
+              blurOnSubmit={false}
+              onKeyPress={skipFromCargo(i)}
+              onSubmitEditing={() => phoneRef.current?.focus()}
+            />
+          ) : paxTier === "row" ? (
+            <View style={[styles.cCargo, paxCell?.cargo]} />
+          ) : null)}
         {isRoomBooking && (
           <Pressable
             onPress={() => updatePassenger(p.id, { mixed_ok: !p.mixed_ok })}
@@ -1360,7 +1613,9 @@ const BookingOffice = () => {
                 <Text style={{ color: theme.greyText, fontSize: 11, fontWeight: "700", letterSpacing: 1 }}>
                   TOTAL
                 </Text>
-                <Text style={{ color: theme.primary, fontSize: 22, fontWeight: "800" }}>{totalStr}</Text>
+                <Text style={{ color: theme.primary, fontSize: 22, fontWeight: "800" }}>
+                  {freePassOnly ? "NO CHARGE" : totalStr}
+                </Text>
               </View>
             )}
             <Pressable
@@ -1586,6 +1841,11 @@ const BookingOffice = () => {
                       <Text style={[styles.paxHeadCell, styles.cNat, { color: theme.greyText }]}>Nationality</Text>
                       <Text style={[styles.paxHeadCell, styles.cIdType, { color: theme.greyText }]}>ID Type</Text>
                       <Text style={[styles.paxHeadCell, styles.cId, { color: theme.greyText }]}>ID Number</Text>
+                      {hasFreePass && (
+                        <Text style={[styles.paxHeadCell, styles.cCargo, { color: theme.greyText }]}>
+                          Cargo Ref
+                        </Text>
+                      )}
                       {isRoomBooking && (
                         <Text style={[styles.paxHeadCell, styles.cMixed, { color: theme.greyText }]}>Mixed OK</Text>
                       )}
@@ -1688,6 +1948,17 @@ const BookingOffice = () => {
                     />
                   </View>
 
+                  {freePassOnly ? (
+                    <View style={styles.mixedRow}>
+                      <FontAwesome name="info-circle" size={13} color={theme.greyText} />
+                      <Text style={[styles.mixedText, { color: theme.greyText }]}>
+                        No charge — every passenger on this sale is a RO/RO cargo free
+                        pass. Nothing is tendered and no change is due; the tickets print
+                        as usual and the free passes appear on your end-of-day report
+                        against the cargo reference keyed above.
+                      </Text>
+                    </View>
+                  ) : (
                   <View style={styles.pillRow}>
                     {(["cash", "qr", "card"] as const).map((m) => {
                       const active = method === m;
@@ -1707,7 +1978,8 @@ const BookingOffice = () => {
                       );
                     })}
                   </View>
-                  {method === "cash" && (
+                  )}
+                  {!freePassOnly && method === "cash" && (
                     <View style={{ gap: 8 }}>
                       {quickTenders.length > 0 && (
                         <View style={styles.quickCashRow}>
@@ -1768,9 +2040,15 @@ const BookingOffice = () => {
                     ) : (
                       <>
                         <Text style={styles.confirmText}>
-                          {method === "qr" ? "Generate QR" : "Confirm Payment"}
+                          {freePassOnly
+                            ? "Issue Free Pass"
+                            : method === "qr"
+                              ? "Generate QR"
+                              : "Confirm Payment"}
                         </Text>
-                        <Text style={styles.confirmTotal}>{totalStr}</Text>
+                        <Text style={styles.confirmTotal}>
+                          {freePassOnly ? "NO CHARGE" : totalStr}
+                        </Text>
                       </>
                     )}
                   </Pressable>
@@ -1839,7 +2117,7 @@ const BookingOffice = () => {
 
       <Toast
         visible={!!toast}
-        title="Payment confirmed"
+        title={freePassSale ? "Free pass issued" : "Payment confirmed"}
         headline={toast?.reference}
         rows={toastRows}
         note={printMsg ?? undefined}
@@ -2023,6 +2301,7 @@ const styles = StyleSheet.create({
   cNat: { flex: 1.1 },
   cIdType: { flex: 1.3 },
   cId: { flex: 1.1 },
+  cCargo: { flex: 1.2 },
   cMixed: { width: 62 },
   mixedCell: { flexDirection: "row", alignItems: "center", gap: 6 },
   payRow: { flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
