@@ -17,6 +17,12 @@ export interface ReportTender {
   /** "Cash" / "Card" / "QR PH" — the server decides how a tender is named. */
   label: string;
   bookings: number;
+  /** Count of rebook fees and fare upgrades collected on this tender.
+   *
+   *  Apart from `bookings` because a top-up is not a sale — it is a second
+   *  payment against one somebody already made, often on another day and
+   *  another tender. Its money IS in `gross`, because it is in the drawer. */
+  rebooks: number;
   gross: number;
   /** Count of refunds paid back against this tender. */
   refunds: number;
@@ -126,6 +132,33 @@ export interface ReportCancelLine {
   currency: string;
 }
 
+/**
+ * One card or QR Ph sale of the shift, with the reference the cashier keyed
+ * off the terminal slip.
+ *
+ * Neither rail settles through this system, so the tender totals cannot be
+ * matched to anything on their own: the acquirer sends a batch of references
+ * and amounts, and this is the only list holding both sides of it.
+ */
+export interface ReportSettlementLine {
+  booking_reference: string;
+  /** Storage key — "card" or "qrph". */
+  method: string;
+  /** How the counter says it: "Card", "QR PH". */
+  label: string;
+  /** Last 5 of the third-party order id. Blank on a sale taken before the
+   *  counter started keying it, which can only be matched by amount and time. */
+  external_ref: string | null;
+  amount: number;
+  currency: string;
+  settled_at: string | null;
+  /** Set only when the line is a rebook fee rather than a sale, and naming the
+   *  ticket that was moved. The acquirer's batch does not distinguish the two,
+   *  so a fee has to say what it was — otherwise it reads as a booking whose
+   *  reference cannot be found. */
+  rebooked_ticket_number: string | null;
+}
+
 /** One line of the TICKET SALES page. */
 export interface ReportSaleLine {
   ticket_number: string | null;
@@ -163,6 +196,8 @@ export interface ZReport {
   /** The operator's pack: front-page summary, then a page each for the
    *  refunds, the voids and the tickets issued. */
   voyage_summary: ReportVoyageSummary[];
+  /** The card/QR Ph references the shift settled against. */
+  settlements: ReportSettlementLine[];
   refunds_detail: ReportRefundLine[];
   cancels_detail: ReportCancelLine[];
   sales_detail: ReportSaleLine[];
@@ -193,6 +228,13 @@ export interface ManifestPassenger {
    *  against, so the manifest can be checked against the shipper's paperwork at
    *  the pier. Null on every paying passenger. */
   cargo_reference: string | null;
+  /** Code of the accommodation class ("AC-A"), as the deck plan and the cabin
+   *  door are marked. The "Class/Cot No." column prints this, not the name. */
+  class_code: string | null;
+  /** Government ID presented at booking. The PASSPORT column is filled from
+   *  these two only when the document actually is a passport. */
+  id_type: string | null;
+  id_number: string | null;
 }
 
 export interface Manifest {
@@ -203,6 +245,10 @@ export interface Manifest {
   destination: string;
   origin_code: string | null;
   destination_code: string | null;
+  /** "0907ZAMBGO2026" — how the operator names this sailing on paper. */
+  voyage_no: string | null;
+  /** Ticket station of the counter that pulled the manifest ("BLVD1"). */
+  station: string | null;
   scheduled_departure: string | null;
   scheduled_arrival: string | null;
   actual_departure: string | null;

@@ -1,15 +1,17 @@
 /**
  * The cashier's end-of-day pack, as A4 printed through the browser.
  *
- * Four documents, in the order the operator files them:
+ * Five documents, in the order the operator files them:
  *
  *   1. DAILY SUMMARY SALES REPORT — one line per sailing, then the totals the
  *      day's cash is counted against.
  *   2. REFUNDS — every ticket refunded on this shift.
  *   3. CANCELLED BOOKINGS — every ticket voided on this shift.
  *   4. TICKET SALES — every ticket issued, in serial order.
+ *   5. CARD & QR PH SETTLEMENTS — the non-cash sales and the reference each
+ *      settled under, which is what the acquirer's batch is matched against.
  *
- * All four print even when a section is empty. The pack is filed as a set and
+ * All five print even when a section is empty. The pack is filed as a set and
  * read months later; a missing page is indistinguishable from a page that was
  * lost, whereas one saying "none this shift" answers the question.
  *
@@ -33,6 +35,7 @@ import {
   ReportCancelLine,
   ReportRefundLine,
   ReportSaleLine,
+  ReportSettlementLine,
   ReportVoyageSummary,
   ZReport,
 } from "@/types/reports";
@@ -537,7 +540,7 @@ const salesPage = (report: ZReport, lines: ReportSaleLine[]): string => {
     .join("\n");
 
   return `
-<section class="page last">
+<section class="page">
   ${pageHead(report, "Ticket Sales", `SHIFT OPENED: ${fmtDate(report.shift.opened_at)}`)}
   <table class="grid">
     <colgroup>
@@ -566,6 +569,81 @@ ${totals || `<tr><td class="k">Total ticket sales</td><td class="n big">${esc(mo
   <div class="foot">
     <span>Printed ${esc(fmtStamp(report.generated_at))} by ${esc(report.generated_by)}</span>
     <span>Shift ${esc(report.shift.id)} &middot; ticket sales</span>
+  </div>
+</section>`;
+};
+
+// ── Page 5: card & QR Ph settlements ────────────────────────────────────────
+
+/**
+ * The two tenders that settle somewhere else, sale by sale.
+ *
+ * Cash is absent on purpose: it reconciles against the drawer on page 1 and
+ * has no counterparty. Card and QR Ph do — each is charged on the counter's
+ * own terminal, and the only thing tying a booking to the acquirer's batch is
+ * the reference the cashier keyed off the slip. A line here with no match in
+ * the batch, or a batch entry with no line here, is exactly what this page is
+ * printed to find.
+ */
+const settlementsPage = (report: ZReport, lines: ReportSettlementLine[]): string => {
+  const byCurrency = new Map<string, number>();
+  lines.forEach((l) =>
+    byCurrency.set(l.currency, (byCurrency.get(l.currency) ?? 0) + l.amount)
+  );
+  const body = lines
+    .map(
+      (l) => `<tr>
+        <td>${esc(fmtStamp(l.settled_at))}</td>
+        <td class="mono">${esc(l.booking_reference)}${
+          l.rebooked_ticket_number
+            ? `<br><span class="sub">rebook fee &middot; ${esc(l.rebooked_ticket_number)}</span>`
+            : ""
+        }</td>
+        <td class="c">${esc(l.label)}</td>
+        <td class="mono c b">${esc(l.external_ref || dash)}</td>
+        <td class="n b">${esc(money(l.amount, l.currency))}</td>
+      </tr>`
+    )
+    .join("\n");
+
+  const totals = [...byCurrency.entries()]
+    .map(
+      ([c, amount]) =>
+        `<tr><td class="k">Total settled off-drawer (${esc(c)})</td><td class="n big">${esc(
+          money(amount, c)
+        )}</td></tr>`
+    )
+    .join("\n");
+
+  return `
+<section class="page last">
+  ${pageHead(report, "Card &amp; QR Ph Settlements", `SHIFT OPENED: ${fmtDate(report.shift.opened_at)}`)}
+  <table class="grid">
+    <colgroup>
+      <col style="width:22%"><col style="width:24%"><col style="width:14%">
+      <col style="width:20%"><col style="width:20%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Settled</th>
+        <th>Booking ref</th>
+        <th class="c">Tender</th>
+        <th class="c">Order ref (last 5)</th>
+        <th class="n">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+${body || `<tr><td colspan="5" class="empty">No card or QR Ph sales on this shift.</td></tr>`}
+    </tbody>
+  </table>
+
+  <table class="overall">
+${totals || `<tr><td class="k">Total settled off-drawer</td><td class="n big">${esc(money(0, "PHP"))}</td></tr>`}
+  </table>
+  ${clerkBlock(report, "Clerk in charge")}
+  <div class="foot">
+    <span>Printed ${esc(fmtStamp(report.generated_at))} by ${esc(report.generated_by)}</span>
+    <span>Shift ${esc(report.shift.id)} &middot; settlements</span>
   </div>
 </section>`;
 };
@@ -716,6 +794,7 @@ export function zReportHtml(report: ZReport): string {
     font-size: 8.5pt;
     padding-top: 8mm;
   }
+  .sub { font-size: 7pt; color: #333; }
   .foot {
     margin-top: 6px;
     font-size: 7pt;
@@ -730,6 +809,7 @@ ${summaryPage(report)}
 ${refundsPage(report, report.refunds_detail ?? [])}
 ${cancelsPage(report, report.cancels_detail ?? [])}
 ${salesPage(report, report.sales_detail ?? [])}
+${settlementsPage(report, report.settlements ?? [])}
 </body>
 </html>`;
 }

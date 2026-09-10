@@ -31,7 +31,14 @@ import {
 import { DEFAULT_CURRENCY, money, moneyWhole } from "@/utils/currency";
 import { autoAssignSeats, seatLabels } from "@/utils/seatAssign";
 import { makeScheduleChecker, RouteVoyage } from "@/utils/schedule";
-import { quickCashOptions } from "@/utils/payment";
+import {
+  TENDERS,
+  TENDER_LABELS,
+  externalRefOk,
+  needsExternalRef,
+  normaliseExternalRef,
+  quickCashOptions,
+} from "@/utils/payment";
 import {
   loadPrinterSettings,
   PrinterSettings,
@@ -49,7 +56,6 @@ import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -218,11 +224,14 @@ const BookingOffice = () => {
   const [contactPaxId, setContactPaxId] = useState<string | null>(null);
 
   // ── Payment ──────────────────────────────────────────────────────────────
-  const [method, setMethod] = useState<"cash" | "card" | "qr" | "">("");
+  const [method, setMethod] = useState<"cash" | "card" | "qrph" | "">("");
   const [tendered, setTendered] = useState("");
+  // Last 5 of the third-party order id, off the card terminal's or the QR Ph
+  // app's own slip. Neither rail is charged through this system, so this is
+  // the only handle the end-of-day report can reconcile them by.
+  const [externalRef, setExternalRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [qr, setQr] = useState<{ orderId: string; image: string } | null>(null);
   // Confirmed payments surface as a toast over the (already cleared) form — the
   // cashier stays on the booking screen and can start the next sale immediately.
   const [toast, setToast] = useState<
@@ -786,6 +795,11 @@ const BookingOffice = () => {
   const change = method === "cash" ? tenderedNum - total : null;
   const quickTenders = quickCashOptions(total);
 
+  // The two tenders that settle somewhere else and have to be tied back to it.
+  const needsRef = needsExternalRef(method);
+  const refClean = normaliseExternalRef(externalRef);
+  const refOk = externalRefOk(method, externalRef);
+
   // Every reason this sale cannot go through, phrased as the fix and ordered the
   // way the cashier works down the screen. Confirm stays pressable while these
   // exist so a press names what is missing instead of doing nothing — a dead
@@ -862,6 +876,11 @@ const BookingOffice = () => {
           total,
           currency
         )}.`
+      );
+    }
+    if (!refOk) {
+      confirmBlockers.push(
+        `Key the last 5 characters of the ${method === "card" ? "card terminal" : "QR Ph"} reference.`
       );
     }
     if (revealed && total <= 0) {
@@ -1026,6 +1045,7 @@ const BookingOffice = () => {
               fare: paxFare(leg.voyage, leg.className, p.category),
               currency: legCurrency(leg.voyage, leg.className) ?? currency,
               seat,
+              passengerType: CATEGORY_TO_DB[p.category],
               // A zero fare alone would print as an ordinary ticket that
               // happens to cost nothing — which is what a lap infant is. The
               // paper has to say which of the two this is, and what shipment
@@ -1055,38 +1075,6 @@ const BookingOffice = () => {
     );
   };
 
-  // Poll QR settlement.
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    if (!qr) return;
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await apiFetch(`/api/v1/cashier/status/${qr.orderId}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.booking_reference) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          completeSale({
-            reference: data.booking_reference,
-            change: null,
-            method: "qr",
-            total,
-            // The server prices the sale off the fare table, so trust its
-            // answer over the cart's when the two could ever disagree.
-            currency: data.currency ?? currency,
-            ticketNumbers: data.ticket_numbers ?? null,
-          }, data.tickets ?? null);
-        }
-      } catch {
-        /* keep polling */
-      }
-    }, 2000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qr]);
-
   const handleConfirm = async () => {
     setErrorMsg(null);
     setPrintMsg(null);
@@ -1115,6 +1103,7 @@ const BookingOffice = () => {
                   amount: total,
                   method,
                   tendered: method === "cash" ? tenderedNum : null,
+                  external_ref: needsRef ? refClean : null,
                   booking: buildBooking(),
                   idempotency_key: idempotencyKey(),
                 }
@@ -1131,18 +1120,14 @@ const BookingOffice = () => {
         );
         return;
       }
-      if (!freePassOnly && method === "qr") {
-        setQr({ orderId: data.order_id, image: data.qr_image });
-      } else {
-        completeSale({
-          reference: data.booking_reference,
-          change: data.change ?? null,
-          method: freePassOnly ? "free_pass" : method,
-          total,
-          currency: data.currency ?? currency,
-          ticketNumbers: data.ticket_numbers ?? null,
-        }, data.tickets ?? null);
-      }
+      completeSale({
+        reference: data.booking_reference,
+        change: data.change ?? null,
+        method: freePassOnly ? "free_pass" : method,
+        total,
+        currency: data.currency ?? currency,
+        ticketNumbers: data.ticket_numbers ?? null,
+      }, data.tickets ?? null);
     } catch {
       setErrorMsg("Could not reach the server.");
     } finally {
@@ -1191,8 +1176,8 @@ const BookingOffice = () => {
     setEmail("");
     setMethod("");
     setTendered("");
+    setExternalRef("");
     setErrorMsg(null);
-    setQr(null);
   };
 
   // Clear the counter for the next sale, then announce the completed one. The
@@ -1221,7 +1206,13 @@ const BookingOffice = () => {
         freePassSale
           ? { label: "Charged", value: "No charge" }
           : { label: "Total paid", value: money(toast.total, toast.currency) },
-        { label: "Payment", value: freePassSale ? "FREE PASS" : toast.method.toUpperCase() },
+        {
+          label: "Payment",
+          value: freePassSale
+            ? "FREE PASS"
+            : TENDER_LABELS[toast.method as keyof typeof TENDER_LABELS]
+              ?? toast.method.toUpperCase(),
+        },
         ...(toast.change != null
           ? [{ label: "Change", value: money(toast.change, toast.currency), accent: true }]
           : []),
@@ -1871,17 +1862,6 @@ const BookingOffice = () => {
               <Text style={[styles.panelTitle, { color: theme.text }]}>Contact & Payment</Text>
               {!revealed ? (
                 hint("Unlocks after choosing a voyage.")
-              ) : qr ? (
-                <View style={{ alignItems: "center", gap: 8 }}>
-                  <Text style={{ color: theme.text, fontSize: 15 }}>Scan to pay {totalStr}</Text>
-                  {qr.image ? (
-                    <Image source={{ uri: qr.image }} style={{ width: 150, height: 150 }} />
-                  ) : null}
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <ActivityIndicator color={theme.tint} />
-                    <Text style={{ color: theme.greyText, fontSize: 13 }}>Waiting for payment…</Text>
-                  </View>
-                </View>
               ) : (
                 <>
                   {contactPaxOptions.length > 0 && (
@@ -1960,24 +1940,56 @@ const BookingOffice = () => {
                     </View>
                   ) : (
                   <View style={styles.pillRow}>
-                    {(["cash", "qr", "card"] as const).map((m) => {
+                    {TENDERS.map((m) => {
                       const active = method === m;
                       return (
                         <Pressable
                           key={m}
-                          onPress={() => setMethod(m)}
+                          onPress={() => {
+                            setMethod(m);
+                            // Each rail carries its own settlement detail, and
+                            // a reference left over from a mistaken tap would
+                            // be filed against the wrong acquirer.
+                            setExternalRef("");
+                            setTendered("");
+                          }}
                           style={[
                             styles.pill,
                             { backgroundColor: active ? theme.tint : "transparent", borderColor: active ? theme.tint : theme.border },
                           ]}
                         >
                           <Text style={{ color: active ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                            {m.toUpperCase()}
+                            {TENDER_LABELS[m]}
                           </Text>
                         </Pressable>
                       );
                     })}
                   </View>
+                  )}
+                  {!freePassOnly && needsRef && (
+                    <View style={{ gap: 6 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                        <TextInput
+                          style={[
+                            inputStyle,
+                            { flex: 1, minWidth: 0, letterSpacing: 2, fontWeight: "700" },
+                            externalRef.length > 0 && !refOk && styles.cInputInvalid,
+                          ]}
+                          value={externalRef}
+                          onChangeText={(v) => setExternalRef(v.toUpperCase().slice(0, 5))}
+                          placeholder="Last 5 of ref"
+                          autoCapitalize="characters"
+                          autoCorrect={false}
+                          maxLength={5}
+                          placeholderTextColor={theme.greyText}
+                        />
+                        <Text style={{ color: theme.greyText, fontSize: 11, flex: 1, lineHeight: 15 }}>
+                          {method === "card"
+                            ? "Last 5 of the order number on the card terminal slip."
+                            : "Last 5 of the order number on the QR Ph confirmation."}
+                        </Text>
+                      </View>
+                    </View>
                   )}
                   {!freePassOnly && method === "cash" && (
                     <View style={{ gap: 8 }}>
@@ -2040,11 +2052,7 @@ const BookingOffice = () => {
                     ) : (
                       <>
                         <Text style={styles.confirmText}>
-                          {freePassOnly
-                            ? "Issue Free Pass"
-                            : method === "qr"
-                              ? "Generate QR"
-                              : "Confirm Payment"}
+                          {freePassOnly ? "Issue Free Pass" : "Confirm Payment"}
                         </Text>
                         <Text style={styles.confirmTotal}>
                           {freePassOnly ? "NO CHARGE" : totalStr}

@@ -1,5 +1,6 @@
 ﻿import Background from "@/components/Background";
 import CancelModal, { CancellableTicket } from "@/components/CancelModal";
+import GroupRebookModal from "@/components/GroupRebookModal";
 import RebookModal, { RebookableTicket } from "@/components/RebookModal";
 import RefundModal, { RefundableTicket } from "@/components/RefundModal";
 import WholeCard from "@/components/WholeCard";
@@ -62,7 +63,9 @@ interface OfficeTicket {
   trip_departed: boolean;
   max_refund: number;
   cancellation_deadline: string | null;
-  rebook_dates: string[];
+  /** Where the rebook date picker opens. Not a whitelist — any future sailing
+   *  on the ticket's own route is allowed. */
+  rebook_default_date: string;
 }
 
 interface OfficeBooking {
@@ -76,6 +79,10 @@ interface OfficeBooking {
   payment_method: string | null;
   /** Whether AUB can return the money automatically — see RefundModal. */
   gateway_refundable: boolean;
+  /** Whether this booking can be broken into two references. False for a
+   *  website sale (its gateway order can only belong to one booking) and for a
+   *  party of one (a split has to leave somebody behind). */
+  splittable: boolean;
 }
 
 interface CancellationPolicy {
@@ -124,6 +131,86 @@ const RefundRebooking = () => {
   const [rebookTarget, setRebookTarget] = useState<RebookableTicket | null>(null);
   const [cancelTarget, setCancelTarget] = useState<CancellableTicket | null>(null);
 
+  // ── Working on several passengers at once ─────────────────────────────────
+  // Off by default and entered deliberately: the per-ticket buttons are what
+  // this screen is normally for, and a permanent checkbox column would make
+  // every visit look like a bulk operation. Both multi-passenger actions share
+  // one selection, so a cashier who ticks the wrong four does not have to
+  // re-tick them after changing their mind about which action they wanted.
+  const [selectMode, setSelectMode] = useState<null | "split" | "group">(null);
+  const [splitPicked, setSplitPicked] = useState<number[]>([]);
+  const [splitBusy, setSplitBusy] = useState(false);
+  const [splitMsg, setSplitMsg] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
+  const [groupOpen, setGroupOpen] = useState(false);
+
+  const selecting = selectMode !== null;
+
+  const toggleSplitPick = (id: number) =>
+    setSplitPicked((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+
+  const leaveSplitMode = () => {
+    setSelectMode(null);
+    setSplitPicked([]);
+  };
+
+  const pickedTickets = tickets.filter((t) => splitPicked.includes(t.id));
+
+  // A split has to leave someone behind — moving everybody is just the same
+  // booking under a new number, and the server refuses it.
+  const splitReady = splitPicked.length > 0 && splitPicked.length < tickets.length;
+
+  // A group rebook moves passengers off ONE sailing onto another, so a
+  // selection spanning an outbound and a return leg is not a thing that can be
+  // done in one move. Said here rather than discovered at the server.
+  const groupTrips = new Set(pickedTickets.map((t) => t.trip_fk));
+  const groupAllBooked = pickedTickets.every((t) => t.status === "Booked");
+  const groupReady =
+    pickedTickets.length > 0 && groupTrips.size === 1 && groupAllBooked;
+  const groupBlocker =
+    pickedTickets.length === 0
+      ? "Tick the passengers who are moving to another sailing."
+      : !groupAllBooked
+        ? "Some of these tickets are already refunded, voided or moved."
+        : groupTrips.size > 1
+          ? "These passengers are on different sailings — move one sailing at a time."
+          : `${pickedTickets.length} moving together. Each still pays their own rebooking fee.`;
+
+  const runSplit = async () => {
+    if (!booking || !splitReady || splitBusy) return;
+    setSplitBusy(true);
+    setSplitMsg(null);
+    try {
+      const res = await apiFetch(
+        `/api/v1/office/bookings/${encodeURIComponent(booking.booking_reference)}/split`,
+        { method: "POST", body: JSON.stringify({ ticket_ids: splitPicked }) }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSplitMsg({ kind: "err", text: data?.detail || "Could not split this booking." });
+        return;
+      }
+      // The new reference is the whole point of the operation and the counter
+      // has to write it down or quote it, so it stays on screen rather than
+      // flashing past — the refresh below reloads the half that remains.
+      setSplitMsg({
+        kind: "ok",
+        text:
+          `${splitPicked.length} passenger${splitPicked.length === 1 ? "" : "s"} moved to ` +
+          `booking ${data.new_booking_reference} (${money(data.new_total_price, data.currency)}).`,
+      });
+      leaveSplitMode();
+      runSearch(booking.booking_reference);
+    } catch {
+      setSplitMsg({ kind: "err", text: "Could not reach the server." });
+    } finally {
+      setSplitBusy(false);
+    }
+  };
+
   const runSearch = async (ref: string) => {
     const trimmed = ref.trim();
     if (!trimmed) return;
@@ -165,6 +252,8 @@ const RefundRebooking = () => {
     setRefundTarget(null);
     setRebookTarget(null);
     setCancelTarget(null);
+    setGroupOpen(false);
+    leaveSplitMode();
     if (booking) runSearch(booking.booking_reference);
   };
 
@@ -228,9 +317,151 @@ const RefundRebooking = () => {
               </View>
             </View>
 
+            {tickets.length > 1 && (
+              <View style={[styles.splitBar, { borderColor: theme.border }]}>
+                {!selecting ? (
+                  <>
+                    <Text style={{ color: theme.greyText, fontSize: 12.5, flex: 1, lineHeight: 17, minWidth: 200 }}>
+                      Working on several passengers at once: move a group to another
+                      sailing in one charge, or give part of the party a booking
+                      reference of their own.
+                    </Text>
+                    <Pressable
+                      onPress={() => {
+                        setSelectMode("group");
+                        setSplitMsg(null);
+                      }}
+                      style={[styles.actionBtn, { borderColor: theme.tint }]}
+                    >
+                      <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>
+                        Rebook together
+                      </Text>
+                    </Pressable>
+                    {/* Only a counter sale can be split — a website booking
+                        settles against a gateway order that cannot belong to
+                        two bookings. The server decides; this just follows. */}
+                    {booking.splittable && (
+                      <Pressable
+                        onPress={() => {
+                          setSelectMode("split");
+                          setSplitMsg(null);
+                        }}
+                        style={[styles.actionBtn, { borderColor: theme.tint }]}
+                      >
+                        <Text style={{ color: theme.tint, fontSize: 12, fontWeight: "700" }}>
+                          Split booking
+                        </Text>
+                      </Pressable>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ color: theme.text, fontSize: 12.5, flex: 1, lineHeight: 17, minWidth: 200 }}>
+                      {selectMode === "split"
+                        ? splitPicked.length === 0
+                          ? "Tick the passengers who are moving to a new booking reference."
+                          : splitPicked.length >= tickets.length
+                            ? "A split has to leave someone behind — untick at least one passenger."
+                            : `${splitPicked.length} of ${tickets.length} moving to a new reference. ` +
+                              "Nothing is charged and nothing is refunded."
+                        : groupBlocker}
+                    </Text>
+                    <Pressable
+                      onPress={leaveSplitMode}
+                      style={[styles.actionBtn, { borderColor: theme.border }]}
+                    >
+                      <Text style={{ color: theme.greyText, fontSize: 12, fontWeight: "700" }}>
+                        Cancel
+                      </Text>
+                    </Pressable>
+                    {selectMode === "split" ? (
+                      <Pressable
+                        onPress={runSplit}
+                        disabled={!splitReady || splitBusy}
+                        style={[
+                          styles.actionBtn,
+                          {
+                            borderColor: splitReady ? theme.tint : theme.border,
+                            opacity: splitReady && !splitBusy ? 1 : 0.5,
+                          },
+                        ]}
+                      >
+                        {splitBusy ? (
+                          <ActivityIndicator color={theme.tint} />
+                        ) : (
+                          <Text
+                            style={{
+                              color: splitReady ? theme.tint : theme.greyText,
+                              fontSize: 12,
+                              fontWeight: "700",
+                            }}
+                          >
+                            Move {splitPicked.length > 0 ? splitPicked.length : ""}
+                          </Text>
+                        )}
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        onPress={() => setGroupOpen(true)}
+                        disabled={!groupReady}
+                        style={[
+                          styles.actionBtn,
+                          {
+                            borderColor: groupReady ? theme.tint : theme.border,
+                            opacity: groupReady ? 1 : 0.5,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={{
+                            color: groupReady ? theme.tint : theme.greyText,
+                            fontSize: 12,
+                            fontWeight: "700",
+                          }}
+                        >
+                          Choose sailing
+                        </Text>
+                      </Pressable>
+                    )}
+                  </>
+                )}
+              </View>
+            )}
+            {splitMsg && (
+              <Text
+                style={{
+                  color: splitMsg.kind === "ok" ? "#2e9e5b" : "#e5484d",
+                  fontSize: 12.5,
+                  lineHeight: 18,
+                  marginTop: 10,
+                }}
+              >
+                {splitMsg.text}
+              </Text>
+            )}
+
             <View style={{ gap: 10, marginTop: 14 }}>
               {tickets.map((t) => (
                 <View key={t.id} style={[styles.ticketRow, { borderColor: theme.border }]}>
+                  {/* Only while splitting: the per-ticket buttons are what this
+                      screen is normally for, and a permanent checkbox column
+                      would make every visit look like a bulk operation. */}
+                  {selecting && (
+                    <Pressable
+                      onPress={() => toggleSplitPick(t.id)}
+                      style={[
+                        styles.splitBox,
+                        {
+                          borderColor: splitPicked.includes(t.id) ? theme.tint : theme.border,
+                          backgroundColor: splitPicked.includes(t.id) ? theme.tint : "transparent",
+                        },
+                      ]}
+                    >
+                      {splitPicked.includes(t.id) && (
+                        <FontAwesome name="check" size={11} color="#fff" />
+                      )}
+                    </Pressable>
+                  )}
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={{ color: theme.text, fontSize: 14, fontWeight: "700" }} numberOfLines={1}>
                       {t.passenger_name} · {t.passenger_type}
@@ -318,7 +549,7 @@ const RefundRebooking = () => {
                               accommodation_class: t.accommodation_class,
                               origin: t.origin,
                               destination: t.destination,
-                              rebook_dates: t.rebook_dates ?? [],
+                              rebook_default_date: t.rebook_default_date ?? "",
                               cancellation_fee: t.cancellation_fee,
                               fee_rate: t.fee_rate,
                               trip_departed: t.trip_departed,
@@ -388,6 +619,27 @@ const RefundRebooking = () => {
         onClose={() => setCancelTarget(null)}
         onSuccess={refresh}
       />
+      <GroupRebookModal
+        visible={groupOpen}
+        bookingReference={booking?.booking_reference ?? null}
+        tickets={pickedTickets.map((t) => ({
+          id: t.id,
+          passenger_name: t.passenger_name,
+          passenger_type: t.passenger_type,
+          price: t.price,
+          currency: t.currency,
+          seat_number: t.seat_number,
+          cancellation_fee: t.cancellation_fee,
+        }))}
+        origin={pickedTickets[0]?.origin ?? ""}
+        destination={pickedTickets[0]?.destination ?? ""}
+        defaultDate={pickedTickets[0]?.rebook_default_date ?? ""}
+        onClose={() => setGroupOpen(false)}
+        onSuccess={(message) => {
+          setSplitMsg({ kind: "ok", text: message });
+          refresh();
+        }}
+      />
     </Background>
   );
 };
@@ -431,4 +683,23 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   actionBtn: { borderWidth: 1.5, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  splitBar: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+  },
+  splitBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
 });

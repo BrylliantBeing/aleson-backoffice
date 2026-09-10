@@ -65,6 +65,10 @@ interface Transaction {
   payment_status: string;
   payment_method: string | null;
   order_id: string | null;
+  /** Last 5 of the third-party order id a card or QR Ph sale settled under.
+   *  Null on cash, on website sales, and on anything sold before the counter
+   *  started keying it. */
+  external_ref: string | null;
   agent_id: number | null;
   agent_name: string;
   passenger_count: number;
@@ -141,7 +145,10 @@ const LIVE_TICKET = new Set(["Booked", "Boarded"]);
 const METHOD_ICON: Record<string, keyof typeof FontAwesome.glyphMap> = {
   cash: "money",
   card: "credit-card",
+  // 'qr' is how counter sales down this rail were stored before it was renamed;
+  // both spellings still turn up in the history a cashier searches.
   qr: "qrcode",
+  qrph: "qrcode",
   free_pass: "truck",
 };
 
@@ -518,6 +525,21 @@ const Transactions = () => {
                               size={13}
                               color={theme.greyText}
                             />
+                          )}
+                          {/* The handle the acquirer's batch is matched by —
+                              this system never saw the charge itself, so a
+                              query about it starts here. */}
+                          {t.external_ref && (
+                            <Text
+                              style={{
+                                color: theme.greyText,
+                                fontSize: 11,
+                                fontWeight: "700",
+                                letterSpacing: 0.8,
+                              }}
+                            >
+                              {t.external_ref}
+                            </Text>
                           )}
                           <View
                             style={[

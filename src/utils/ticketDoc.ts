@@ -110,11 +110,15 @@ export function renderTicket(data: TicketData, options: TicketDocOptions = {}): 
       W
     )
   );
-  // Why this passenger paid nothing, and against what. A zero fare on its own
-  // reads as an error to anyone checking the ticket — and to the passenger.
+  // Which fare this passenger travelled on. A free pass says more than its
+  // category does — why nothing was paid, and against what shipment — because
+  // a zero fare on its own reads as an error to anyone checking the ticket,
+  // and to the passenger. Every other category prints as it is stored.
   if (data.freePass) {
     w.line(pair("TYPE", "FREE PASS (RO/RO CARGO)", W));
     if (data.cargoReference) w.line(pair("CARGO REF", data.cargoReference, W));
+  } else if (data.passengerType) {
+    w.line(pair("TYPE", data.passengerType, W));
   }
   w.line(rule(W));
 
@@ -196,6 +200,7 @@ export function sampleTicket(): TicketData {
     sex: "M",
     accommodation: "TOURIST",
     seat: "12A",
+    passengerType: "ADULT",
     departureDate: "08/21/2026 Fri",
     departureTime: "06:00:00 PM",
     dateIssued: "08/17/2026",

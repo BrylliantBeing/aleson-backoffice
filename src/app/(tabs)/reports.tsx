@@ -437,7 +437,9 @@ const Reports = () => {
 
                       {/* Each tender totalled on its own — cash reconciles
                           against the drawer, card and QR PH against the
-                          gateway, and one combined figure answers neither. */}
+                          acquirer's batch (the printed pack lists their
+                          references), and one combined figure answers
+                          neither. */}
                       <View style={{ gap: 10, marginTop: 16 }}>
                         {t.tenders.map((tender) => (
                           <View
@@ -463,6 +465,15 @@ const Reports = () => {
                             </View>
                             <Text style={{ color: theme.greyText, fontSize: 12.5 }}>
                               {tender.bookings} {tender.bookings === 1 ? "sale" : "sales"}
+                              {/* Named rather than folded into the sale count:
+                                  a rebook fee is money taken against somebody
+                                  else's sale, and a cashier reconciling wants
+                                  to know which of the two a figure is. */}
+                              {tender.rebooks > 0
+                                ? ` · ${tender.rebooks} rebook ${
+                                    tender.rebooks === 1 ? "fee" : "fees"
+                                  }`
+                                : ""}
                               {tender.refunded > 0 || tender.cancelled > 0
                                 ? ` · gross ${money(tender.gross, t.currency)}`
                                 : ""}

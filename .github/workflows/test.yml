@@ -1,0 +1,45 @@
+# Typechecks and runs the Jest suite. Deliberately separate from
+# build-push.yml rather than a gate on it, matching aleson-website and
+# aleson-backend: image builds stay unblocked, so a red suite reports a problem
+# without also stopping a release. Wire it in as a `needs:` there if you would
+# rather it did gate.
+#
+# Note the branch: this repo is on `master`, not `main`. Copying
+# aleson-website's workflow verbatim produces one that never fires.
+name: Test
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # TypeScript 6 no longer pulls in @types/* automatically, which is why
+      # tsconfig.json names `jest` explicitly. Without that this step fails on
+      # the test files alone.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm run test:ci

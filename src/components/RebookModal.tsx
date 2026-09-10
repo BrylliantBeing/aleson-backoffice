@@ -3,7 +3,15 @@ import { Voyage } from "@/types/voyage";
 import { apiFetch, API_BASE } from "@/utils/api";
 import { Category, CATEGORY_TO_DB } from "@/utils/passengerRules";
 import { money, moneyWhole } from "@/utils/currency";
-import { quickCashOptions } from "@/utils/payment";
+import {
+  Tender,
+  TENDERS,
+  TENDER_LABELS,
+  externalRefOk,
+  needsExternalRef,
+  normaliseExternalRef,
+  quickCashOptions,
+} from "@/utils/payment";
 import { FontAwesome } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -18,6 +26,7 @@ import {
   View,
 } from "react-native";
 import SeatAssignModal from "./SeatAssignModal";
+import TravelDateField from "./TravelDateField";
 import VoyageLegPicker from "./VoyageLegPicker";
 
 // DB-canonical passenger_type (as stored on tickets) → UI category slug, the
@@ -44,7 +53,9 @@ export interface RebookableTicket {
    * its own departure day, plus the next day when it is on the last sailing of
    * that day. The route is fixed to the ticket's own, so neither is pickable.
    */
-  rebook_dates: string[];
+  /** Where the date picker opens. Any future sailing on the ticket's own
+   *  route is allowed, so this is a starting point, not a whitelist. */
+  rebook_default_date: string;
   /**
    * The rebooking charge on this ticket. A rebooking is priced exactly like a
    * refund — the same share of the fare paid, off the same departure — so the
@@ -64,18 +75,6 @@ interface RebookModalProps {
   onSuccess: () => void;
 }
 
-// "2026-08-20" → "Thu, 20 Aug". Parsed as local parts, not via Date(iso),
-// which would read the bare date as UTC and can land on the previous day.
-const labelForDate = (iso: string) => {
-  const [y, m, d] = iso.split("-").map(Number);
-  if (!y || !m || !d) return iso;
-  return new Date(y, m - 1, d).toLocaleDateString("en-PH", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-};
-
 const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) => {
   const colorScheme = useColorScheme() ?? "light";
   const theme = Colors[colorScheme] ?? Colors.light;
@@ -93,21 +92,28 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
   const [seat, setSeat] = useState<string | null>(null);
   const [seatModalVisible, setSeatModalVisible] = useState(false);
 
-  const [method, setMethod] = useState<"cash" | "card">("cash");
+  const [method, setMethod] = useState<Tender>("cash");
   const [tendered, setTendered] = useState("");
+  // A rebook fee is charged on the same card terminal and QR Ph device as any
+  // other counter sale, so it reconciles against the acquirer's batch the same
+  // way — see needsExternalRef.
+  const [externalRef, setExternalRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-seed from the ticket each time the modal opens. The ticket's own
-  // departure day is the default (and often the only) allowed date.
+  // Re-seed from the ticket each time the modal opens, on its own departure
+  // day — the sailing a passenger is moving off is nearly always the day they
+  // are moving within, and it is one fewer control to touch for the common
+  // case. Any other date the route sails is a keystroke away.
   useEffect(() => {
     if (visible && ticket) {
-      setDate(ticket.rebook_dates[0] ?? "");
+      setDate(ticket.rebook_default_date ?? "");
       setVoyageId(null);
       setSelectedClass("");
       setSeat(null);
       setMethod("cash");
       setTendered("");
+      setExternalRef("");
       setError(null);
     }
   }, [visible, ticket]);
@@ -156,7 +162,12 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
   const change = method === "cash" && owesPayment ? tenderedNum - amountDue : null;
   const quickTenders = owesPayment ? quickCashOptions(amountDue) : [];
 
-  const paymentOk = !owesPayment || (method === "cash" ? tenderedNum >= amountDue : method === "card");
+  const needsRef = needsExternalRef(method);
+  const refOk = externalRefOk(method, externalRef);
+
+  const paymentOk =
+    !owesPayment ||
+    (method === "cash" ? tenderedNum >= amountDue : refOk);
 
   const canConfirm = !!ticket && !!voyageId && !!selectedClass && !!seat && paymentOk && !submitting;
 
@@ -174,7 +185,13 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
             accommodation_class: selectedClass,
             seat_number: seat,
           },
-          payment: owesPayment ? { method, tendered: method === "cash" ? tenderedNum : undefined } : null,
+          payment: owesPayment
+            ? {
+                method,
+                tendered: method === "cash" ? tenderedNum : undefined,
+                external_ref: needsRef ? normaliseExternalRef(externalRef) : null,
+              }
+            : null,
         }),
       });
       if (!res.ok) {
@@ -218,33 +235,22 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
                 {origin} → {destination}
               </Text>
               <Text style={{ color: theme.greyText, fontSize: 12 }}>
-                {ticket.rebook_dates.length > 1
-                  ? "Last sailing of the day — this ticket may move to another sailing today or tomorrow, same route."
-                  : "Rebooking stays on the same route and the same departure day."}
+                Rebooking stays on the same route. Any sailing still to leave will
+                do — pick the date and the sailings for it load below.
               </Text>
             </View>
 
             <View style={{ gap: 8 }}>
-              <Text style={[styles.fieldLabel, { color: theme.greyText }]}>NEW DEPARTURE DATE</Text>
-              <View style={styles.pillRow}>
-                {ticket.rebook_dates.map((d) => {
-                  const active = date === d;
-                  return (
-                    <Pressable
-                      key={d}
-                      onPress={() => setDate(d)}
-                      style={[
-                        styles.pill,
-                        { backgroundColor: active ? theme.tint : "transparent", borderColor: active ? theme.tint : theme.border },
-                      ]}
-                    >
-                      <Text style={{ color: active ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                        {labelForDate(d)}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+              {/* A free date field rather than a list of allowed days: the
+                  policy now permits any future sailing on the route, and a
+                  timetable that runs daily would be an unusable row of pills.
+                  A date the route does not sail simply returns no voyages,
+                  which the picker below says plainly. */}
+              <TravelDateField
+                label="New departure date"
+                value={date}
+                onChange={setDate}
+              />
             </View>
 
             <VoyageLegPicker
@@ -302,24 +308,51 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
             {owesPayment && (
               <View style={{ gap: 8 }}>
                 <View style={styles.pillRow}>
-                  {(["cash", "card"] as const).map((m) => {
+                  {TENDERS.map((m) => {
                     const active = method === m;
                     return (
                       <Pressable
                         key={m}
-                        onPress={() => setMethod(m)}
+                        onPress={() => {
+                          setMethod(m);
+                          setExternalRef("");
+                          setTendered("");
+                        }}
                         style={[
                           styles.pill,
                           { backgroundColor: active ? theme.tint : "transparent", borderColor: active ? theme.tint : theme.border },
                         ]}
                       >
                         <Text style={{ color: active ? "#fff" : theme.text, fontSize: 13, fontWeight: "700" }}>
-                          {m.toUpperCase()}
+                          {TENDER_LABELS[m]}
                         </Text>
                       </Pressable>
                     );
                   })}
                 </View>
+                {needsRef && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <TextInput
+                      style={[
+                        inputStyle,
+                        { flex: 1, minWidth: 0, letterSpacing: 2, fontWeight: "700" },
+                        externalRef.length > 0 && !refOk && { borderColor: "#e5484d" },
+                      ]}
+                      value={externalRef}
+                      onChangeText={(v) => setExternalRef(v.toUpperCase().slice(0, 5))}
+                      placeholder="Last 5 of ref"
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      maxLength={5}
+                      placeholderTextColor={theme.greyText}
+                    />
+                    <Text style={{ color: theme.greyText, fontSize: 11, flex: 1, lineHeight: 15 }}>
+                      {method === "card"
+                        ? "Last 5 of the order number on the card terminal slip."
+                        : "Last 5 of the order number on the QR Ph confirmation."}
+                    </Text>
+                  </View>
+                )}
                 {method === "cash" && (
                   <View style={{ gap: 8 }}>
                     {quickTenders.length > 0 && (

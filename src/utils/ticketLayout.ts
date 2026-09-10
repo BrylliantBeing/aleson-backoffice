@@ -27,6 +27,15 @@ export interface TicketData {
   sex: string;
   accommodation: string;
   seat: string;
+  /**
+   * The fare category this ticket was sold under, printed as it is stored:
+   * "ADULT", "SENIOR", "INFANT"… A discounted or seatless ticket has to say so
+   * on its face — otherwise a senior fare and a lap infant both read as a
+   * mispriced adult, to the checker at the ramp and to whoever audits the
+   * day's return against the money taken. Empty on a sale made before the
+   * field existed, which is why the line is conditional rather than assumed.
+   */
+  passengerType: string;
   departureDate: string;
   departureTime: string;
   dateIssued: string;
@@ -251,6 +260,8 @@ export interface TicketPassenger {
   currency?: string | null;
   /** Empty for a passenger who occupies no seat (a lap infant). */
   seat?: string | null;
+  /** DB-canonical fare category — "Adult", "Senior", "Infant", … */
+  passengerType?: string | null;
   /** Travelling free with a RO/RO cargo shipment. */
   freePass?: boolean;
   /** The plate number or bill of lading a free pass was issued against. */
@@ -283,6 +294,7 @@ export function buildTicketData(
     accommodation: (leg.accommodation || "").toUpperCase(),
     // Printed as the number painted on the ship, not the prefixed stored name.
     seat: seatNumberLabel(pax.seat || "").toUpperCase(),
+    passengerType: (pax.passengerType || "").trim().toUpperCase(),
     departureDate: formatDepartureDate(leg.departDateISO),
     departureTime: formatDepartureTime(leg.departTime),
     dateIssued: MONTHS_DD(issued),
@@ -403,6 +415,7 @@ export function buildReprintTickets(booking: ReprintBooking): TicketData[] {
         fare: t.price,
         currency: t.currency,
         seat: t.seat_number,
+        passengerType: t.passenger_type,
         freePass: t.passenger_type === CATEGORY_TO_DB.freepass,
         cargoReference: t.cargo_reference,
       }
