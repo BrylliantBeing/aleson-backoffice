@@ -146,7 +146,7 @@ export interface ReportSettlementLine {
   method: string;
   /** How the counter says it: "Card", "QR PH". */
   label: string;
-  /** Last 5 of the third-party order id. Blank on a sale taken before the
+  /** Tail of the third-party order id (last 4 digits for QR Ph, last 5 for card). Blank on a sale taken before the
    *  counter started keying it, which can only be matched by amount and time. */
   external_ref: string | null;
   amount: number;

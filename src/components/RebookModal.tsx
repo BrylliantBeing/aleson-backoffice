@@ -7,7 +7,9 @@ import {
   Tender,
   TENDERS,
   TENDER_LABELS,
+  clampExternalRef,
   externalRefOk,
+  externalRefSpec,
   needsExternalRef,
   normaliseExternalRef,
   quickCashOptions,
@@ -164,6 +166,7 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
 
   const needsRef = needsExternalRef(method);
   const refOk = externalRefOk(method, externalRef);
+  const refSpec = externalRefSpec(method);
 
   const paymentOk =
     !owesPayment ||
@@ -339,17 +342,16 @@ const RebookModal = ({ visible, ticket, onClose, onSuccess }: RebookModalProps) 
                         externalRef.length > 0 && !refOk && { borderColor: "#e5484d" },
                       ]}
                       value={externalRef}
-                      onChangeText={(v) => setExternalRef(v.toUpperCase().slice(0, 5))}
-                      placeholder="Last 5 of ref"
+                      onChangeText={(v) => setExternalRef(clampExternalRef(method, v))}
+                      placeholder={refSpec?.placeholder}
                       autoCapitalize="characters"
                       autoCorrect={false}
-                      maxLength={5}
+                      maxLength={refSpec?.length}
+                      keyboardType={refSpec?.digitsOnly ? "number-pad" : "default"}
                       placeholderTextColor={theme.greyText}
                     />
                     <Text style={{ color: theme.greyText, fontSize: 11, flex: 1, lineHeight: 15 }}>
-                      {method === "card"
-                        ? "Last 5 of the order number on the card terminal slip."
-                        : "Last 5 of the order number on the QR Ph confirmation."}
+                      {refSpec?.hint}
                     </Text>
                   </View>
                 )}

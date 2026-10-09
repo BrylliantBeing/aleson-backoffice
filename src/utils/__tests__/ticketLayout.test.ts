@@ -330,7 +330,7 @@ describe("buildTicketData", () => {
     // A discounted or seatless ticket has to say so on its face — a senior
     // fare and a lap infant both read as a mispriced adult otherwise.
     expect(buildTicketData(LEG, { ...PAX, passengerType: "Senior" }).passengerType)
-      .toBe("SENIOR");
+      .toBe("SENIOR/PWD");
     expect(buildTicketData(LEG, { ...PAX, passengerType: "Infant", fare: 0 }).passengerType)
       .toBe("INFANT");
   });

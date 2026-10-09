@@ -2,12 +2,14 @@ import Colors from "@/constants/Colors";
 import { Voyage } from "@/types/voyage";
 import { apiFetch, API_BASE } from "@/utils/api";
 import { money, moneyWhole } from "@/utils/currency";
-import { Category, CATEGORY_TO_DB, SEAT_OCCUPYING } from "@/utils/passengerRules";
+import { Category, CATEGORY_TO_DB, passengerTypeLabel, SEAT_OCCUPYING } from "@/utils/passengerRules";
 import {
   Tender,
   TENDERS,
   TENDER_LABELS,
+  clampExternalRef,
   externalRefOk,
+  externalRefSpec,
   needsExternalRef,
   normaliseExternalRef,
   quickCashOptions,
@@ -164,6 +166,7 @@ const GroupRebookModal: React.FC<Props> = ({
 
   const needsRef = needsExternalRef(method);
   const refOk = externalRefOk(method, externalRef);
+  const refSpec = externalRefSpec(method);
   const paymentOk =
     !owesPayment || (method === "cash" ? tenderedNum >= amountDue : refOk);
 
@@ -293,7 +296,7 @@ const GroupRebookModal: React.FC<Props> = ({
                     >
                       <View style={{ flex: 1, gap: 2, minWidth: 150 }}>
                         <Text style={{ color: theme.text, fontSize: 13.5, fontWeight: "700" }}>
-                          {q.ticket.passenger_name} · {q.ticket.passenger_type}
+                          {q.ticket.passenger_name} · {passengerTypeLabel(q.ticket.passenger_type)}
                         </Text>
                         <Text style={{ color: theme.greyText, fontSize: 12 }}>
                           {occupiesSeat(q.ticket.passenger_type)
@@ -381,17 +384,16 @@ const GroupRebookModal: React.FC<Props> = ({
                           externalRef.length > 0 && !refOk && { borderColor: "#e5484d" },
                         ]}
                         value={externalRef}
-                        onChangeText={(v) => setExternalRef(v.toUpperCase().slice(0, 5))}
-                        placeholder="Last 5 of ref"
+                        onChangeText={(v) => setExternalRef(clampExternalRef(method, v))}
+                        placeholder={refSpec?.placeholder}
                         autoCapitalize="characters"
                         autoCorrect={false}
-                        maxLength={5}
+                        maxLength={refSpec?.length}
+                        keyboardType={refSpec?.digitsOnly ? "number-pad" : "default"}
                         placeholderTextColor={theme.greyText}
                       />
                       <Text style={{ color: theme.greyText, fontSize: 11, flex: 1, lineHeight: 15 }}>
-                        {method === "card"
-                          ? "One charge for the whole party — last 5 from the terminal slip."
-                          : "One charge for the whole party — last 5 from the QR Ph confirmation."}
+                        One charge for the whole party. {refSpec?.hint}
                       </Text>
                     </View>
                   )}

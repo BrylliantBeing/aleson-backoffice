@@ -1,17 +1,10 @@
 /**
- * Picking seats for a group without splitting them up.
+ * Picking seats in number order.
  *
- * Two rules do all the work, and both are easy to break by accident:
- *
- *   1. Seats are adjacent only on the SAME deck, SAME row, with consecutive
- *      columns. Different decks reuse the same x/y grid, and the last seat of
- *      one row is not next to the first seat of the next.
- *   2. An assignment must not strand a lone empty seat between two occupied
- *      ones — that seat becomes unsellable to anyone travelling in a pair.
- *
- * The picker shuffles, so most of these assert properties rather than exact
- * seats. Where an exact answer IS forced by the rules, it is asserted
- * directly — those are the cases that prove the constraint is doing something.
+ * The office fills a vessel from seat 1 up: every group gets the lowest free
+ * numbers in its class. The order is the number painted on the ship, not the
+ * seat's position on the map or its stored name, and it is read as a number —
+ * seat 2 comes before seat 10.
  */
 
 import {
@@ -30,11 +23,6 @@ const seat = (name: string, x: number, y: number, class_code = "ECO", label?: st
 const oneRow = (n: number): SeatMap => ({
   decks: [{ name: "Main", seats: Array.from({ length: n }, (_, i) => seat(`ECO-${i + 1}`, i + 1, 1)) }],
 });
-
-const rowOf = (names: string[], map: SeatMap) => {
-  const all = map.decks.flatMap((d, di) => d.seats.map((s) => ({ ...s, deck: di })));
-  return names.map((n) => all.find((s) => s.name === n)!);
-};
 
 // ── Reading a seat map ──────────────────────────────────────────────────────
 
@@ -131,135 +119,88 @@ describe("autoAssignSeats", () => {
 
   it("never hands out a seat somebody already has", () => {
     const taken = ["ECO-2", "ECO-5"];
-    for (let i = 0; i < 40; i++) {
-      const { seats } = autoAssignSeats(oneRow(8), "Economy", taken, 3);
-      expect(seats.some((s) => taken.includes(s))).toBe(false);
-    }
+    const { seats } = autoAssignSeats(oneRow(8), "Economy", taken, 3);
+    expect(seats.some((s) => taken.includes(s))).toBe(false);
   });
 
   it("only ever assigns seats of the class asked for", () => {
     const mixed: SeatMap = {
       decks: [{
         name: "Main",
-        seats: [seat("ECO-1", 1, 1), seat("ECO-2", 2, 1), seat("AC-1", 3, 1, "AC")],
+        seats: [seat("AC-1", 1, 1, "AC"), seat("ECO-1", 2, 1), seat("ECO-2", 3, 1)],
       }],
     };
-    for (let i = 0; i < 20; i++) {
-      const { seats } = autoAssignSeats(mixed, "Economy", [], 2);
-      expect(seats.sort()).toEqual(["ECO-1", "ECO-2"]);
-    }
+    expect(autoAssignSeats(mixed, "Economy", [], 2).seats).toEqual(["ECO-1", "ECO-2"]);
   });
 
-  it("seats a group side by side when a run is long enough", () => {
-    for (let i = 0; i < 40; i++) {
-      const { seats } = autoAssignSeats(oneRow(10), "Economy", [], 3);
-      const xs = rowOf(seats, oneRow(10)).map((s) => s.x).sort((a, b) => a - b);
-      expect(xs[2] - xs[0]).toBe(2);   // three consecutive columns
-    }
+  it("starts from seat 1 and counts up", () => {
+    expect(autoAssignSeats(oneRow(10), "Economy", [], 4).seats)
+      .toEqual(["ECO-1", "ECO-2", "ECO-3", "ECO-4"]);
   });
 
-  it("does not treat the end of one row as next to the start of the next", () => {
-    // Two rows of two. A pair must land within one row, never straddling the
-    // row edge.
-    const twoRows: SeatMap = {
-      decks: [{
-        name: "Main",
-        seats: [
-          seat("A1", 1, 1), seat("A2", 2, 1),
-          seat("B1", 1, 2), seat("B2", 2, 2),
-        ],
-      }],
+  it("carries on from the last seat sold", () => {
+    expect(autoAssignSeats(oneRow(10), "Economy", ["ECO-1", "ECO-2", "ECO-3"], 2).seats)
+      .toEqual(["ECO-4", "ECO-5"]);
+  });
+
+  it("fills a number freed earlier in the run before moving on", () => {
+    // ECO-2 was refunded (or an agent hand-picked around it): it is the lowest
+    // free number, so it goes first.
+    expect(autoAssignSeats(oneRow(10), "Economy", ["ECO-1", "ECO-3", "ECO-4"], 2).seats)
+      .toEqual(["ECO-2", "ECO-5"]);
+  });
+
+  it("reads seat numbers as numbers, not text", () => {
+    // As text, "10" sorts before "2".
+    const map: SeatMap = {
+      decks: [{ name: "Main", seats: [seat("10", 1, 1), seat("9", 2, 1), seat("2", 3, 1)] }],
     };
-    for (let i = 0; i < 40; i++) {
-      const sorted = [...autoAssignSeats(twoRows, "Economy", [], 2).seats].sort();
-      expect([["A1", "A2"], ["B1", "B2"]]).toContainEqual(sorted);
-    }
+    expect(autoAssignSeats(map, "Economy", [], 3).seats).toEqual(["2", "9", "10"]);
   });
 
-  it("does not treat seats on different decks as adjacent", () => {
-    // Both decks use the same x/y grid, so a picker that ignores the deck
-    // would happily pair D0-1 with D1-2.
-    const twoDecks: SeatMap = {
-      decks: [
-        { name: "Main", seats: [seat("D0-1", 1, 1), seat("D0-2", 2, 1)] },
-        { name: "Upper", seats: [seat("D1-1", 1, 1), seat("D1-2", 2, 1)] },
-      ],
+  it("follows the painted number, not where the seat sits on the map", () => {
+    // Ciara Joie 6 numbers some columns bottom-to-top: 3, 2, 1 left to right.
+    const map: SeatMap = {
+      decks: [{ name: "Main", seats: [seat("3", 1, 1), seat("2", 2, 1), seat("1", 3, 1)] }],
     };
-    for (let i = 0; i < 40; i++) {
-      const sorted = [...autoAssignSeats(twoDecks, "Economy", [], 2).seats].sort();
-      expect([["D0-1", "D0-2"], ["D1-1", "D1-2"]]).toContainEqual(sorted);
-    }
+    expect(autoAssignSeats(map, "Economy", [], 2).seats).toEqual(["1", "2"]);
   });
 
-  it("does not pair seats across an aisle", () => {
-    // A gap in x is an aisle: 2 and 5 are not neighbours.
-    const withAisle: SeatMap = {
-      decks: [{
-        name: "Main",
-        seats: [seat("E1", 1, 1), seat("E2", 2, 1), seat("E5", 5, 1), seat("E6", 6, 1)],
-      }],
-    };
-    for (let i = 0; i < 40; i++) {
-      const sorted = [...autoAssignSeats(withAisle, "Economy", [], 2).seats].sort();
-      expect([["E1", "E2"], ["E5", "E6"]]).toContainEqual(sorted);
-    }
-  });
-
-  it("never strands a lone seat between two occupied ones", () => {
-    // ECO-1 is taken and the row is only three wide. Seating the passenger in
-    // ECO-3 would leave ECO-2 flanked and unsellable, so ECO-2 is the only
-    // acceptable answer whatever the shuffle does.
-    for (let i = 0; i < 40; i++) {
-      const { seats } = autoAssignSeats(oneRow(3), "Economy", ["ECO-1"], 1);
-      expect(seats).toEqual(["ECO-2"]);
-    }
-  });
-
-  it("treats a row edge as not stranding anything", () => {
-    // ECO-1 has no left-hand neighbour, so taking ECO-2 leaves it at the edge
-    // rather than flanked — a perfectly sellable single.
-    const { seats, ok } = autoAssignSeats(oneRow(2), "Economy", [], 1);
-    expect(ok).toBe(true);
-    expect(["ECO-1", "ECO-2"]).toContain(seats[0]);
-  });
-
-  it("still seats a group too large for any single row", () => {
-    // Falls back to filling from the largest runs, which is the point: it
-    // always terminates with a valid set rather than refusing a big group.
-    const twoRows: SeatMap = {
-      decks: [{
-        name: "Main",
-        seats: [
-          seat("A1", 1, 1), seat("A2", 2, 1),
-          seat("B1", 1, 2), seat("B2", 2, 2),
-        ],
-      }],
-    };
-    const { ok, seats } = autoAssignSeats(twoRows, "Economy", [], 4);
-    expect(ok).toBe(true);
-    expect([...seats].sort()).toEqual(["A1", "A2", "B1", "B2"]);
-  });
-
-  it("clusters an oversized group into the fewest rows it can", () => {
-    // Six passengers, one row of four and one of two: both rows are filled
-    // rather than the group being scattered a seat at a time.
+  it("orders by the painted label when the stored name says otherwise", () => {
     const map: SeatMap = {
       decks: [{
         name: "Main",
-        seats: [
-          seat("A1", 1, 1), seat("A2", 2, 1), seat("A3", 3, 1), seat("A4", 4, 1),
-          seat("B1", 1, 2), seat("B2", 2, 2),
-        ],
+        seats: [seat("ECO-X", 1, 1, "ECO", "7"), seat("ECO-Y", 2, 1, "ECO", "3")],
       }],
     };
-    const { seats } = autoAssignSeats(map, "Economy", [], 6);
-    expect([...seats].sort()).toEqual(["A1", "A2", "A3", "A4", "B1", "B2"]);
+    expect(autoAssignSeats(map, "Economy", [], 1).seats).toEqual(["ECO-Y"]);
+  });
+
+  it("counts on across decks", () => {
+    // Kristel Jane 5 numbers continuously from one deck to the next.
+    const map: SeatMap = {
+      decks: [
+        { name: "Deck B", seats: [seat("1", 1, 1), seat("2", 2, 1)] },
+        { name: "Deck C", seats: [seat("3", 1, 1), seat("4", 2, 1)] },
+      ],
+    };
+    expect(autoAssignSeats(map, "Economy", ["1"], 2).seats).toEqual(["2", "3"]);
+  });
+
+  it("walks lettered rows in order: A9, A10, then B1", () => {
+    const map: SeatMap = {
+      decks: [{
+        name: "Main",
+        seats: [seat("B1", 1, 2), seat("A10", 10, 1), seat("A9", 9, 1)],
+      }],
+    };
+    expect(autoAssignSeats(map, "Economy", [], 3).seats).toEqual(["A9", "A10", "B1"]);
   });
 
   it("takes the last remaining seats when the class is exactly full", () => {
     const { ok, seats } = autoAssignSeats(oneRow(3), "Economy", ["ECO-1"], 2);
     expect(ok).toBe(true);
-    expect([...seats].sort()).toEqual(["ECO-2", "ECO-3"]);
+    expect(seats).toEqual(["ECO-2", "ECO-3"]);
   });
 
   it("assigns nothing from a vessel with no seat map", () => {
@@ -271,15 +212,5 @@ describe("autoAssignSeats", () => {
     // Callers pass a Set from the availability response as often as an array.
     const { seats } = autoAssignSeats(oneRow(4), "Economy", new Set(["ECO-1"]), 1);
     expect(seats).not.toContain("ECO-1");
-  });
-
-  it("varies its answer across calls rather than always filling from one end", () => {
-    // The shuffle is deliberate: always assigning ECO-1 first would wear one
-    // end of the vessel and make every group sit on top of each other.
-    const picks = new Set<string>();
-    for (let i = 0; i < 60; i++) {
-      picks.add(autoAssignSeats(oneRow(12), "Economy", [], 2).seats.join(","));
-    }
-    expect(picks.size).toBeGreaterThan(1);
   });
 });

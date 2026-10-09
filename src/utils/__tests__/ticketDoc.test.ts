@@ -7,7 +7,8 @@
  * seatless ticket apart from a mispriced adult, at the ramp and in the audit.
  */
 
-import { renderTicket, sampleTicket } from "@/utils/ticketDoc";
+import { FONT_A_COLS } from "@/utils/escpos";
+import { renderTicket, sampleTicket, TERMS_URL } from "@/utils/ticketDoc";
 import { buildTicketData } from "@/utils/ticketLayout";
 
 const LEG = {
@@ -46,7 +47,7 @@ const printed = (data = sampleTicket()): string =>
 describe("renderTicket — passenger type", () => {
   it("prints the fare category on an ordinary ticket", () => {
     const doc = printed(buildTicketData(LEG, { ...PAX, passengerType: "Senior" }));
-    expect(doc).toMatch(/TYPE\s+SENIOR/);
+    expect(doc).toMatch(/TYPE\s+SENIOR\/PWD/);
   });
 
   it("prints INFANT on a lap infant's ticket", () => {
@@ -84,5 +85,18 @@ describe("renderTicket — passenger type", () => {
 
   it("gives the printer-setup sample a category like a real ticket", () => {
     expect(printed()).toMatch(/TYPE\s+ADULT/);
+  });
+});
+
+describe("renderTicket — terms", () => {
+  it("says a scanned ticket is a used one", () => {
+    // Terms 7.6: the gate scan is what makes a ticket used, refundable or not.
+    const doc = printed().replace(/\n/g, " ");
+    expect(doc).toMatch(/counts as USED/);
+  });
+
+  it("prints where the full terms can be read, on one line", () => {
+    expect(printed()).toContain(TERMS_URL);
+    expect(TERMS_URL.length).toBeLessThanOrEqual(FONT_A_COLS);
   });
 });

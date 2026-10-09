@@ -34,7 +34,9 @@ import { makeScheduleChecker, RouteVoyage } from "@/utils/schedule";
 import {
   TENDERS,
   TENDER_LABELS,
+  clampExternalRef,
   externalRefOk,
+  externalRefSpec,
   needsExternalRef,
   normaliseExternalRef,
   quickCashOptions,
@@ -226,8 +228,8 @@ const BookingOffice = () => {
   // ── Payment ──────────────────────────────────────────────────────────────
   const [method, setMethod] = useState<"cash" | "card" | "qrph" | "">("");
   const [tendered, setTendered] = useState("");
-  // Last 5 of the third-party order id, off the card terminal's or the QR Ph
-  // app's own slip. Neither rail is charged through this system, so this is
+  // The tail of the third-party order id, off the card terminal's slip or the
+  // AUB app's QR Ph receipt (see EXTERNAL_REF_SPECS). Neither rail is charged through this system, so this is
   // the only handle the end-of-day report can reconcile them by.
   const [externalRef, setExternalRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -683,7 +685,7 @@ const BookingOffice = () => {
     return idemKeyRef.current;
   };
 
-  const dobErrors = passengers.map((p) => validateDob(p.category, p.birthdate));
+  const dobErrors = passengers.map((p) => validateDob(p.category, p.birthdate, p.id_type));
   // Names are matched against the ID at the gate, so a lone initial isn't enough.
   const nameErrors = passengers.map((p) => ({
     first: validateName(p.first_name, "First name"),
@@ -799,6 +801,7 @@ const BookingOffice = () => {
   const needsRef = needsExternalRef(method);
   const refClean = normaliseExternalRef(externalRef);
   const refOk = externalRefOk(method, externalRef);
+  const refSpec = externalRefSpec(method);
 
   // Every reason this sale cannot go through, phrased as the fix and ordered the
   // way the cashier works down the screen. Confirm stays pressable while these
@@ -880,7 +883,9 @@ const BookingOffice = () => {
     }
     if (!refOk) {
       confirmBlockers.push(
-        `Key the last 5 characters of the ${method === "card" ? "card terminal" : "QR Ph"} reference.`
+        method === "card"
+          ? "Key the last 5 characters of the card terminal reference."
+          : "Key the last 4 digits of the AUB Platform Order ID."
       );
     }
     if (revealed && total <= 0) {
@@ -1976,17 +1981,16 @@ const BookingOffice = () => {
                             externalRef.length > 0 && !refOk && styles.cInputInvalid,
                           ]}
                           value={externalRef}
-                          onChangeText={(v) => setExternalRef(v.toUpperCase().slice(0, 5))}
-                          placeholder="Last 5 of ref"
+                          onChangeText={(v) => setExternalRef(clampExternalRef(method, v))}
+                          placeholder={refSpec?.placeholder}
                           autoCapitalize="characters"
                           autoCorrect={false}
-                          maxLength={5}
+                          maxLength={refSpec?.length}
+                          keyboardType={refSpec?.digitsOnly ? "number-pad" : "default"}
                           placeholderTextColor={theme.greyText}
                         />
                         <Text style={{ color: theme.greyText, fontSize: 11, flex: 1, lineHeight: 15 }}>
-                          {method === "card"
-                            ? "Last 5 of the order number on the card terminal slip."
-                            : "Last 5 of the order number on the QR Ph confirmation."}
+                          {refSpec?.hint}
                         </Text>
                       </View>
                     </View>

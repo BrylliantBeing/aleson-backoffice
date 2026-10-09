@@ -28,16 +28,63 @@ export const TENDERS: readonly Tender[] = ["cash", "qrph", "card"];
 export const needsExternalRef = (method: string): boolean =>
   method === "card" || method === "qrph";
 
+/** How each referenced tender's slip number is keyed at the counter. */
+export type ExternalRefSpec = {
+  length: number;
+  digitsOnly: boolean;
+  placeholder: string;
+  hint: string;
+};
+
 /**
- * Whether a keyed reference is one the server will accept.
+ * What the cashier keys for each tender that needs a reference.
  *
- * Five characters, letters allowed beside digits: an acquirer whose reference
- * ends in a letter must not be able to block a sale the customer has already
- * been charged for. Mirrors _validated_external_ref in the backend — if the
- * two drift, the counter refuses what the server would take, or worse.
+ * QR Ph is collected by scanning the customer's code in the AUB merchant app,
+ * whose receipt shows a numeric Platform Order ID — the last 4 digits are
+ * keyed. The card terminal's slip number can end in a letter, so card keeps
+ * five characters with letters allowed: a reference the acquirer prints must
+ * never be able to block a sale the customer has already been charged for.
+ *
+ * Mirrors EXTERNAL_REF_SPECS in the backend — if the two drift, the counter
+ * refuses what the server would take, or worse.
  */
-export const externalRefOk = (method: string, raw: string): boolean =>
-  !needsExternalRef(method) || /^[A-Z0-9]{5}$/.test(raw.trim().toUpperCase());
+export const EXTERNAL_REF_SPECS: Record<"card" | "qrph", ExternalRefSpec> = {
+  qrph: {
+    length: 4,
+    digitsOnly: true,
+    placeholder: "Last 4 digits",
+    hint: "Last 4 digits of the Platform Order ID in the AUB app.",
+  },
+  card: {
+    length: 5,
+    digitsOnly: false,
+    placeholder: "Last 5 of ref",
+    hint: "Last 5 of the order number on the card terminal slip.",
+  },
+};
+
+export const externalRefSpec = (method: string): ExternalRefSpec | null =>
+  method === "card" || method === "qrph" ? EXTERNAL_REF_SPECS[method] : null;
+
+/**
+ * Trim what the cashier types to what the field can hold: uppercase, only the
+ * characters the tender's reference can contain, and no longer than it.
+ */
+export const clampExternalRef = (method: string, raw: string): string => {
+  const spec = externalRefSpec(method);
+  if (!spec) return raw;
+  const kept = raw.toUpperCase().replace(spec.digitsOnly ? /[^0-9]/g : /[^A-Z0-9]/g, "");
+  return kept.slice(0, spec.length);
+};
+
+/** Whether a keyed reference is one the server will accept. */
+export const externalRefOk = (method: string, raw: string): boolean => {
+  const spec = externalRefSpec(method);
+  if (!spec) return true;
+  const ref = raw.trim().toUpperCase();
+  const pattern = spec.digitsOnly ? /^[0-9]+$/ : /^[A-Z0-9]+$/;
+  return ref.length === spec.length && pattern.test(ref);
+};
 
 /** Fold a keyed reference to the form the server stores. */
 export const normaliseExternalRef = (raw: string): string =>

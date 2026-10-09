@@ -7,6 +7,7 @@ import WholeCard from "@/components/WholeCard";
 import Colors from "@/constants/Colors";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import { passengerTypeLabel } from "@/utils/passengerRules";
 import { seatNumberLabel } from "@/utils/seatLabel";
 import { FontAwesome } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
@@ -464,7 +465,7 @@ const RefundRebooking = () => {
                   )}
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={{ color: theme.text, fontSize: 14, fontWeight: "700" }} numberOfLines={1}>
-                      {t.passenger_name} · {t.passenger_type}
+                      {t.passenger_name} · {passengerTypeLabel(t.passenger_type)}
                     </Text>
                     <Text style={{ color: theme.greyText, fontSize: 12 }} numberOfLines={1}>
                       {t.origin} → {t.destination} · {formatDeparture(t.scheduled_departure)}

@@ -43,7 +43,15 @@ export const DEFAULT_TERMS =
   "Passengers should be on board one (1) hour before scheduled departure, " +
   "otherwise the reservation may be cancelled. This ticket is non-transferable " +
   "and is valid only for the voyage, date and vessel shown. Present this ticket " +
-  "and a valid ID at the boarding gate.";
+  "and a valid ID at the boarding gate. Once its QR code is scanned at the gate " +
+  "this ticket counts as USED and can no longer be refunded or rebooked.";
+
+/**
+ * Where the full Terms and Conditions live, printed under the summary above.
+ * Text rather than a second QR on purpose: a ticket carrying two codes invites
+ * the gate to scan the wrong one. Scheme-less so it fits one Font A line.
+ */
+export const TERMS_URL = "aleson-shipping.com/terms-and-conditions";
 
 export interface TicketDocOptions {
   /**
@@ -163,7 +171,10 @@ export function renderTicket(data: TicketData, options: TicketDocOptions = {}): 
   w.font("B");
   for (const l of wrap(o.terms, FONT_B_COLS)) w.line(l);
   w.font("A");
-  w.align("center").line("GOOD FOR ONE PASSENGER");
+  w.align("center");
+  w.font("B").line("Full Terms and Conditions:").font("A");
+  w.line(TERMS_URL);
+  w.line("GOOD FOR ONE PASSENGER");
   // The line that makes the ticket refusable if it turns up detached from its
   // shipment: a free pass is part of a cargo package, not something that was
   // bought, so it is not anyone's to pass on or sell.

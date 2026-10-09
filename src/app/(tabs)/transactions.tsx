@@ -6,6 +6,7 @@ import Colors from "@/constants/Colors";
 import { useAuth } from "@/context/AuthContext";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import { passengerTypeLabel } from "@/utils/passengerRules";
 import {
   DEFAULT_SETTINGS,
   loadPrinterSettings,
@@ -65,7 +66,7 @@ interface Transaction {
   payment_status: string;
   payment_method: string | null;
   order_id: string | null;
-  /** Last 5 of the third-party order id a card or QR Ph sale settled under.
+  /** Tail of the third-party order id (QR Ph 4 digits, card 5) a card or QR Ph sale settled under.
    *  Null on cash, on website sales, and on anything sold before the counter
    *  started keying it. */
   external_ref: string | null;
@@ -572,7 +573,7 @@ const Transactions = () => {
                           <View key={tk.id} style={[styles.ticket, { borderColor: theme.border }]}>
                             <View style={{ flex: 1, gap: 2 }}>
                               <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>
-                                {tk.passenger_name} · {tk.passenger_type}
+                                {tk.passenger_name} · {passengerTypeLabel(tk.passenger_type)}
                               </Text>
                               <Text style={{ color: theme.greyText, fontSize: 12 }}>
                                 {tk.accommodation_class} · Seat {seatNumberLabel(tk.seat_number)} ·{" "}

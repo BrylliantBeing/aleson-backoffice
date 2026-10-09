@@ -11,6 +11,7 @@ import {
 } from "@/types/reports";
 import { apiFetch } from "@/utils/api";
 import { money } from "@/utils/currency";
+import { passengerTypeLabel } from "@/utils/passengerRules";
 import { printManifest } from "@/utils/manifestDoc";
 import { seatNumberLabel } from "@/utils/seatLabel";
 import { printZReport } from "@/utils/zreportDoc";
@@ -429,7 +430,7 @@ const Reports = () => {
                           </Text>
                           <Text style={[styles.kpiLabel, { color: theme.greyText }]}>
                             {Object.entries(t.by_passenger_type)
-                              .map(([type, count]) => `${type} ${count}`)
+                              .map(([type, count]) => `${passengerTypeLabel(type)} ${count}`)
                               .join(" · ") || "—"}
                           </Text>
                         </View>

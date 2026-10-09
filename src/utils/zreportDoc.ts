@@ -628,7 +628,7 @@ const settlementsPage = (report: ZReport, lines: ReportSettlementLine[]): string
         <th>Settled</th>
         <th>Booking ref</th>
         <th class="c">Tender</th>
-        <th class="c">Order ref (last 5)</th>
+        <th class="c">Order ref (last 4–5)</th>
         <th class="n">Amount</th>
       </tr>
     </thead>

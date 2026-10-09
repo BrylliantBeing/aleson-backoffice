@@ -22,6 +22,16 @@ export const CATEGORY_TO_DB: Record<Category, string> = {
 };
 
 /**
+ * How a stored passenger_type reads on screen and on paper. Only Senior differs:
+ * the category covers persons with disability too (same statutory discount),
+ * but the stored value stays "Senior" so no fare or ticket row has to move.
+ */
+const DB_TYPE_LABELS: Record<string, string> = { Senior: "Senior/PWD" };
+
+export const passengerTypeLabel = (dbType: string | null | undefined): string =>
+  dbType ? DB_TYPE_LABELS[dbType] ?? dbType : "";
+
+/**
  * The escort travelling free with a RO/RO cargo shipment — the truck's driver
  * or helper. Unlike every other category it has no row in `fares`: it is an
  * entitlement the counter grants against the shipper's paperwork, not a price
@@ -43,7 +53,10 @@ export interface CategoryMeta {
 // Fixed display order used for the count steppers and passenger rows.
 export const CATEGORIES: CategoryMeta[] = [
   { key: "regular", label: "Regular", color: "#028cef", seatOccupying: true },
-  { key: "senior", label: "Senior", color: "#f5a623", seatOccupying: true },
+  // One fare for both: senior citizens and persons with disability get the same
+  // statutory discount, so the counter sells them as one category. Stored as
+  // "Senior" (CATEGORY_TO_DB) so fares, tickets and reports need no migration.
+  { key: "senior", label: "Senior/PWD", color: "#f5a623", seatOccupying: true },
   { key: "student", label: "Student", color: "#2e9e5b", seatOccupying: true },
   { key: "military", label: "Military", color: "#5a6b7b", seatOccupying: true },
   { key: "minor", label: "Minor", color: "#8b5cf6", seatOccupying: true },
@@ -80,12 +93,13 @@ export function ageOn(birthdate: string, on: Date = new Date()): number {
 /**
  * Validate that a passenger's DOB matches the category they were placed in.
  * Returns an error string, or null when valid.
- *   infant 0–1 · minor 2–11 · senior ≥60 · regular/student/military/free pass:
- *   no DOB gate.
+ *   infant 0–1 · minor 2–11 · senior/PWD ≥60, or any age on a PWD ID ·
+ *   regular/student/military/free pass: no DOB gate.
  */
 export function validateDob(
   category: Category,
-  birthdate: string
+  birthdate: string,
+  idType: string = ""
 ): string | null {
   if (!birthdate) return "Date of birth is required.";
   const age = ageOn(birthdate);
@@ -96,7 +110,10 @@ export function validateDob(
     case "minor":
       return age >= 2 && age <= 11 ? null : "Minor must be 2–11 years old.";
     case "senior":
-      return age >= 60 ? null : "Senior must be 60 years or older.";
+      // A PWD qualifies at any age; the PWD ID is what the gate checks.
+      return age >= 60 || idType.trim() === "PWD ID"
+        ? null
+        : "Senior/PWD must be 60 or older, or present a PWD ID.";
     default:
       return null; // regular / student / military / free pass
   }

@@ -7,7 +7,11 @@
  * would open a drawer on a short payment.
  */
 
-import { quickCashOptions } from "@/utils/payment";
+import {
+  clampExternalRef,
+  externalRefOk,
+  quickCashOptions,
+} from "@/utils/payment";
 
 describe("quickCashOptions", () => {
   it("offers the exact amount and the next round notes above it", () => {
@@ -52,5 +56,31 @@ describe("quickCashOptions", () => {
 
   it("suggests only the exact amount once it is past the largest note step", () => {
     expect(quickCashOptions(10000)).toEqual([10000]);
+  });
+});
+
+describe("the settlement reference", () => {
+  it("takes the last 4 digits of the AUB Platform Order ID for QR Ph", () => {
+    expect(externalRefOk("qrph", "0427")).toBe(true);
+    expect(externalRefOk("qrph", "04271")).toBe(false);
+    expect(externalRefOk("qrph", "042")).toBe(false);
+    expect(externalRefOk("qrph", "04A7")).toBe(false);
+  });
+
+  it("keeps five characters, letters allowed, for card", () => {
+    expect(externalRefOk("card", "4A7B2")).toBe(true);
+    expect(externalRefOk("card", "0427")).toBe(false);
+  });
+
+  it("asks nothing of cash", () => {
+    expect(externalRefOk("cash", "")).toBe(true);
+  });
+
+  it("clamps what is typed to what the tender's field can hold", () => {
+    // Separators and stray letters drop out, and typing past the length stops
+    // there rather than shifting earlier digits out of the field.
+    expect(clampExternalRef("qrph", "12a3-4")).toBe("1234");
+    expect(clampExternalRef("qrph", "123456")).toBe("1234");
+    expect(clampExternalRef("card", "4a7b2c")).toBe("4A7B2");
   });
 });

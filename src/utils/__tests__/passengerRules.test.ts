@@ -142,13 +142,19 @@ describe("validateDob", () => {
     });
   });
 
-  describe("senior: 60 and over", () => {
+  describe("senior/PWD: 60 and over, or any age on a PWD ID", () => {
     it("accepts someone on their sixtieth birthday", () => {
       expect(validateDob("senior", "1966-09-06")).toBeNull();
     });
 
-    it("refuses someone a day short of sixty", () => {
-      expect(validateDob("senior", "1966-09-07")).toBe("Senior must be 60 years or older.");
+    it("refuses someone a day short of sixty who holds no PWD ID", () => {
+      expect(validateDob("senior", "1966-09-07", "Passport")).toBe(
+        "Senior/PWD must be 60 or older, or present a PWD ID."
+      );
+    });
+
+    it("accepts a person with disability of any age on a PWD ID", () => {
+      expect(validateDob("senior", "1995-03-14", "PWD ID")).toBeNull();
     });
   });
 

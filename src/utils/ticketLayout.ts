@@ -9,7 +9,7 @@
  * currency conventions, which are independent of any printer.
  */
 
-import { ageOn, CATEGORY_TO_DB } from "@/utils/passengerRules";
+import { ageOn, CATEGORY_TO_DB, passengerTypeLabel } from "@/utils/passengerRules";
 import { seatNumberLabel } from "@/utils/seatLabel";
 
 /** One printed passage ticket. Values are already formatted for the paper. */
@@ -294,7 +294,7 @@ export function buildTicketData(
     accommodation: (leg.accommodation || "").toUpperCase(),
     // Printed as the number painted on the ship, not the prefixed stored name.
     seat: seatNumberLabel(pax.seat || "").toUpperCase(),
-    passengerType: (pax.passengerType || "").trim().toUpperCase(),
+    passengerType: passengerTypeLabel((pax.passengerType || "").trim()).toUpperCase(),
     departureDate: formatDepartureDate(leg.departDateISO),
     departureTime: formatDepartureTime(leg.departTime),
     dateIssued: MONTHS_DD(issued),
