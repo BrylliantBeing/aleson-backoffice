@@ -46,7 +46,8 @@ const settlementLabel = (ticket: CancellableTicket): string => {
     return "Paid in cash — hand the full fare back from the till. Your drawer will be expected to hold that much less.";
   }
   if (!ticket.gateway_refundable) {
-    return "No gateway payment on record — return the full fare by hand and record it here.";
+    return "Taken on the counter's card terminal or PayMate phone (or before online payments) — " +
+      "reverse the full fare there, then record it here.";
   }
   return "The full fare is reversed to the account used to pay, via AUB, before the ticket is voided.";
 };

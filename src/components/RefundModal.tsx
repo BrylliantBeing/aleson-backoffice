@@ -46,7 +46,8 @@ const payoutLabel = (ticket: RefundableTicket): string => {
   if (!ticket.gateway_refundable) {
     return (ticket.payment_method ?? "").toLowerCase() === "cash"
       ? "Paid in cash — hand the refund back from the till."
-      : "No gateway payment on record — pay this back by hand and record it here.";
+      : "Taken on the counter's card terminal or PayMate phone (or before online payments) — " +
+        "refund it there, then record it here.";
   }
   switch ((ticket.payment_method ?? "").toLowerCase()) {
     case "card":
